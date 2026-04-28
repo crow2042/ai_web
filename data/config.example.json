@@ -1,0 +1,18 @@
+{
+  "admin": {
+    "username": "admin",
+    "salt": "replace_with_random_hex_salt",
+    "hash": "replace_with_pbkdf2_sha256_hash"
+  },
+  "apis": [
+    {
+      "id": "example-model-id",
+      "name": "Example Model",
+      "model": "gpt-image-1",
+      "endpoint": "https://your-provider.example.com/v1/images/generations",
+      "apiKey": "sk-or-provider-key",
+      "size": "1024x1024",
+      "enabled": true
+    }
+  ]
+}

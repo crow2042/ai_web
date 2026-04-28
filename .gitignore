@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Runtime data (contains secrets and generated records)
+data/config.json
+data/records.jsonl
+data/generations.jsonl
+data/generated/
+
+# Local deploy artifacts
+ai-image-site-deploy/
+ai-image-site-deploy.zip
+download-test.png
+
+# Logs / temp
+*.log
+*.tmp
+*.bak
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

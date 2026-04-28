@@ -1,0 +1,807 @@
+﻿$ErrorActionPreference = "Stop"
+
+$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$PublicDir = Join-Path $Root "public"
+$DataDir = Join-Path $Root "data"
+$GeneratedDir = Join-Path $DataDir "generated"
+$ConfigFile = Join-Path $DataDir "config.json"
+$LogFile = Join-Path $DataDir "generations.jsonl"
+$RecordFile = Join-Path $DataDir "records.jsonl"
+$Port = if ($env:PORT) { [int]$env:PORT } else { 3000 }
+$Sessions = [hashtable]::Synchronized(@{})
+$DataLock = New-Object object
+
+function ConvertTo-JsonText($Value) {
+  return ($Value | ConvertTo-Json -Depth 20 -Compress)
+}
+
+function Get-PasswordHash([string]$Password, [string]$Salt) {
+  $saltBytes = [Text.Encoding]::UTF8.GetBytes($Salt)
+  $derive = New-Object Security.Cryptography.Rfc2898DeriveBytes($Password, $saltBytes, 120000, [Security.Cryptography.HashAlgorithmName]::SHA256)
+  return [BitConverter]::ToString($derive.GetBytes(32)).Replace("-", "").ToLowerInvariant()
+}
+
+function Ensure-Data {
+  if (!(Test-Path $DataDir)) { New-Item -ItemType Directory -Path $DataDir | Out-Null }
+  if (!(Test-Path $GeneratedDir)) { New-Item -ItemType Directory -Path $GeneratedDir | Out-Null }
+  if (!(Test-Path $ConfigFile)) {
+    $bytes = New-Object byte[] 16
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    $rng.GetBytes($bytes)
+    $rng.Dispose()
+    $salt = [BitConverter]::ToString($bytes).Replace("-", "").ToLowerInvariant()
+    $config = [ordered]@{
+      admin = [ordered]@{ username = "admin"; salt = $salt; hash = (Get-PasswordHash -Password "1596357" -Salt $salt) }
+      apis = @()
+    }
+    Set-Content -Path $ConfigFile -Value ($config | ConvertTo-Json -Depth 20) -Encoding UTF8
+  }
+}
+
+function Read-Config {
+  Ensure-Data
+  [Threading.Monitor]::Enter($DataLock)
+  try {
+    return (Get-Content -Raw -Path $ConfigFile -Encoding UTF8 | ConvertFrom-Json)
+  } finally {
+    [Threading.Monitor]::Exit($DataLock)
+  }
+}
+
+function Save-Config($Config) {
+  [Threading.Monitor]::Enter($DataLock)
+  try {
+    Set-Content -Path $ConfigFile -Value ($Config | ConvertTo-Json -Depth 20) -Encoding UTF8
+  } finally {
+    [Threading.Monitor]::Exit($DataLock)
+  }
+}
+
+function Add-Log($Entry) {
+  [Threading.Monitor]::Enter($DataLock)
+  try {
+    Add-Content -Path $LogFile -Value (ConvertTo-JsonText $Entry) -Encoding UTF8
+    Add-Content -Path $RecordFile -Value (ConvertTo-JsonText (Get-CompactRecord $Entry)) -Encoding UTF8
+  } finally {
+    [Threading.Monitor]::Exit($DataLock)
+  }
+}
+
+function Get-CompactRecord($Entry) {
+  return [ordered]@{
+    time = $Entry.time
+    visitor = $Entry.visitor
+    clientId = $Entry.clientId
+    model = $Entry.model
+    modelId = $Entry.modelId
+    prompt = $Entry.prompt
+    aspect = $Entry.aspect
+    referenceName = $Entry.referenceName
+    referencePreviews = $Entry.referencePreviews
+    count = $Entry.count
+    outputs = $Entry.outputs
+    status = $Entry.status
+    error = $Entry.error
+  }
+}
+
+function Get-ReferencePreviews($Names, $References, $IncomingPreviews) {
+  $nameList = @()
+  if ($Names) { $nameList = ([string]$Names).Split("、") }
+  $refs = @(Get-ValueList $References)
+  $incoming = @()
+  if ($IncomingPreviews -is [array]) {
+    $incoming = @($IncomingPreviews)
+  } elseif ($IncomingPreviews) {
+    $incoming = @($IncomingPreviews)
+  }
+  $items = @()
+  for ($i = 0; $i -lt $refs.Count; $i++) {
+    $incomingItem = $null
+    if ($i -lt $incoming.Count) { $incomingItem = $incoming[$i] }
+    $src = ""
+    if ($incomingItem -and $incomingItem.src) {
+      $candidate = [string]$incomingItem.src
+      if ($candidate.Length -le 200000) { $src = $candidate }
+    }
+    $items += [ordered]@{
+      name = $(if ($incomingItem -and $incomingItem.name) { [string]$incomingItem.name } elseif ($i -lt $nameList.Count -and $nameList[$i]) { $nameList[$i] } else { "参考图 $($i + 1)" })
+      label = $(if ($incomingItem -and $incomingItem.label) { [string]$incomingItem.label } else { "参考图 $($i + 1)" })
+      src = $src
+    }
+  }
+  return @($items)
+}
+
+function Get-ValueList($Value) {
+  $items = @()
+  if ($null -eq $Value) { return @() }
+  if ($Value -is [string]) {
+    if ($Value) { $items += $Value }
+    return @($items)
+  }
+  foreach ($item in @($Value)) {
+    if ($null -eq $item) { continue }
+    if ($item -is [string]) {
+      if ($item) { $items += $item }
+    } else {
+      $text = [string]$item
+      if ($text) { $items += $text }
+    }
+  }
+  return @($items)
+}
+
+function Test-GptImageModel($Model) {
+  return ([string]$Model) -match '^gpt-image-'
+}
+
+function Get-ImageEndpoint($Endpoint, [string]$Action) {
+  try {
+    $builder = [UriBuilder]::new([string]$Endpoint)
+    $basePath = (($builder.Path -replace '/images?/(generations|edits)/?$', '')).TrimEnd('/')
+    $builder.Path = "$basePath/images/$Action"
+    return $builder.Uri.AbsoluteUri
+  } catch {
+    $base = (([string]$Endpoint) -replace '/images?/(generations|edits)/?$', '').TrimEnd('/')
+    return "$base/images/$Action"
+  }
+}
+
+function Get-UploadEndpoint($Endpoint) {
+  try {
+    $builder = [UriBuilder]::new([string]$Endpoint)
+    $builder.Path = ($builder.Path -replace '/images/generations/?$', '/uploads/images')
+    return $builder.Uri.AbsoluteUri
+  } catch {
+    return (([string]$Endpoint) -replace '/images/generations/?$', '/uploads/images')
+  }
+}
+
+function ConvertFrom-DataUrl($DataUrl, [int]$Index) {
+  $text = [string]$DataUrl
+  $match = [regex]::Match($text, '^data:([^;,]+);base64,(.+)$')
+  if (!$match.Success) { return $null }
+  $mime = $match.Groups[1].Value
+  $ext = "png"
+  if ($mime -match 'jpeg') { $ext = "jpg" }
+  elseif ($mime -match 'webp') { $ext = "webp" }
+  elseif ($mime -match 'gif') { $ext = "gif" }
+  return [ordered]@{
+    bytes = [Convert]::FromBase64String($match.Groups[2].Value)
+    mime = $mime
+    name = "reference-$($Index + 1).$ext"
+  }
+}
+
+function Invoke-GptImageEdit($Api, [string]$Prompt, $Refs, [string]$Size) {
+  Add-Type -AssemblyName System.Net.Http
+  $client = [System.Net.Http.HttpClient]::new()
+  $form = [System.Net.Http.MultipartFormDataContent]::new()
+  $imageCount = 0
+  try {
+    $client.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", [string]$Api.apiKey)
+    $form.Add([System.Net.Http.StringContent]::new([string]$Api.model), "model")
+    $form.Add([System.Net.Http.StringContent]::new($Prompt), "prompt")
+    $form.Add([System.Net.Http.StringContent]::new("1"), "n")
+    $form.Add([System.Net.Http.StringContent]::new($Size), "size")
+
+    $items = @(Get-ValueList $Refs)
+    for ($i = 0; $i -lt $items.Count; $i++) {
+      $ref = [string]$items[$i]
+      $file = ConvertFrom-DataUrl -DataUrl $ref -Index $i
+      if ($file) {
+        $fileContent = [System.Net.Http.ByteArrayContent]::new([byte[]]$file.bytes)
+        $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse([string]$file.mime)
+        $form.Add($fileContent, "image", [string]$file.name)
+        $imageCount++
+      } elseif ($ref -match '^https?://') {
+        $form.Add([System.Net.Http.StringContent]::new($ref), "image_url")
+        $imageCount++
+      }
+    }
+    if ($imageCount -eq 0) { return @() }
+
+    $endpoint = Get-ImageEndpoint -Endpoint $Api.endpoint -Action "edits"
+    $response = $client.PostAsync($endpoint, $form).Result
+    $text = $response.Content.ReadAsStringAsync().Result
+    try { $payload = ($text | ConvertFrom-Json) } catch { $payload = $null }
+    if (!$response.IsSuccessStatusCode) {
+      $message = $(if ($payload.error.message) { $payload.error.message } elseif ($payload.message) { $payload.message } else { $text })
+      throw $message
+    }
+    $images = @(Get-ImagesFromPayload $payload)
+    if ($images.Count -eq 0) { $images = @(Wait-GenerationTask -Api $Api -Payload $payload -Endpoint $endpoint) }
+    return @($images)
+  } finally {
+    $form.Dispose()
+    $client.Dispose()
+  }
+}
+
+function Invoke-UploadReferenceImage($Api, $DataUrl, [int]$Index) {
+  $file = ConvertFrom-DataUrl -DataUrl $DataUrl -Index $Index
+  if (!$file) { return "" }
+  Add-Type -AssemblyName System.Net.Http
+  $client = [System.Net.Http.HttpClient]::new()
+  $form = [System.Net.Http.MultipartFormDataContent]::new()
+  try {
+    $client.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", [string]$Api.apiKey)
+    $fileContent = [System.Net.Http.ByteArrayContent]::new([byte[]]$file.bytes)
+    $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse([string]$file.mime)
+    $form.Add($fileContent, "file", [string]$file.name)
+    $form.Add([System.Net.Http.StringContent]::new("generation"), "purpose")
+    $response = $client.PostAsync((Get-UploadEndpoint $Api.endpoint), $form).Result
+    $text = $response.Content.ReadAsStringAsync().Result
+    try { $payload = ($text | ConvertFrom-Json) } catch { $payload = $null }
+    if (!$response.IsSuccessStatusCode -or ($payload -and $payload.success -eq $false)) {
+      $message = $(if ($payload.error.message) { $payload.error.message } elseif ($payload.message) { $payload.message } else { $text })
+      throw "上传参考图失败：$message"
+    }
+    $url = $(if ($payload.data.url) { $payload.data.url } elseif ($payload.url) { $payload.url } elseif ($payload.image_url) { $payload.image_url } else { "" })
+    if (!$url) { throw "参考图上传成功，但未返回图片 URL" }
+    return [string]$url
+  } finally {
+    $form.Dispose()
+    $client.Dispose()
+  }
+}
+
+function Get-ReferenceImageUrls($Api, $Refs) {
+  $urls = @()
+  $items = @(Get-ValueList $Refs)
+  for ($i = 0; $i -lt $items.Count; $i++) {
+    $ref = [string]$items[$i]
+    if ($ref -match '^https?://') { $urls += $ref }
+    elseif ($ref -match '^data:image/') { $urls += (Invoke-UploadReferenceImage -Api $Api -DataUrl $ref -Index $i) }
+  }
+  return @($urls | Where-Object { $_ })
+}
+
+function Send-Json($Response, [int]$Status, $Payload, $Headers = @{}) {
+  $json = ConvertTo-JsonText $Payload
+  $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+  $Response.StatusCode = $Status
+  $Response.ContentType = "application/json; charset=utf-8"
+  foreach ($key in $Headers.Keys) { $Response.Headers[$key] = $Headers[$key] }
+  $Response.ContentLength64 = $bytes.Length
+  $Response.OutputStream.Write($bytes, 0, $bytes.Length)
+  $Response.OutputStream.Close()
+}
+
+function Send-Binary($Response, [int]$Status, [byte[]]$Bytes, [string]$ContentType, $Headers = @{}) {
+  $Response.StatusCode = $Status
+  $Response.ContentType = $ContentType
+  foreach ($key in $Headers.Keys) { $Response.Headers[$key] = $Headers[$key] }
+  $Response.ContentLength64 = $Bytes.Length
+  $Response.OutputStream.Write($Bytes, 0, $Bytes.Length)
+  $Response.OutputStream.Close()
+}
+
+function Read-Body($Request) {
+  if ($Request.ContentLength64 -le 0) { return @{} }
+  if ($Request.ContentLength64 -gt 20971520) { throw "请求体过大" }
+  $reader = New-Object IO.StreamReader($Request.InputStream, [Text.Encoding]::UTF8)
+  $text = $reader.ReadToEnd()
+  if ([string]::IsNullOrWhiteSpace($text)) { return @{} }
+  return ($text | ConvertFrom-Json)
+}
+
+function Get-QueryParam($Request, [string]$Name) {
+  $query = $Request.Url.Query
+  if (!$query) { return "" }
+  foreach ($part in $query.TrimStart("?").Split("&")) {
+    if (!$part) { continue }
+    $kv = $part.Split("=", 2)
+    $key = [Uri]::UnescapeDataString($kv[0].Replace("+", " "))
+    if ($key -eq $Name) {
+      if ($kv.Count -lt 2) { return "" }
+      return [Uri]::UnescapeDataString($kv[1].Replace("+", " "))
+    }
+  }
+  return ""
+}
+
+function Get-CookieValue($Request, [string]$Name) {
+  $cookie = $Request.Cookies[$Name]
+  if ($cookie) { return $cookie.Value }
+  return ""
+}
+
+function Test-Admin($Request) {
+  $token = (Get-CookieValue -Request $Request -Name "admin_session")
+  return ($token -and $Sessions.ContainsKey($token) -and $Sessions[$token] -gt [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+}
+
+function Get-PublicApis($Config) {
+  $items = @()
+  foreach ($api in @($Config.apis)) {
+    if ($api.enabled -ne $false) {
+      $items += [ordered]@{ id = $api.id; name = $api.name; model = $api.model; size = $(if ($api.size) { $api.size } else { "1024x1024" }) }
+    }
+  }
+  return $items
+}
+
+function Get-ImagesFromPayload($Payload) {
+  $images = @()
+  if ($Payload.data -and $Payload.data.Count -gt 0) {
+    foreach ($item in @($Payload.data)) {
+      if ($item.b64_json) { $images += "data:image/png;base64,$($item.b64_json)" }
+      elseif ($item.url) { $images += $item.url }
+    }
+  }
+  if ($Payload.result -and $Payload.result.data -and $Payload.result.data.Count -gt 0) {
+    foreach ($item in @($Payload.result.data)) {
+      if ($item.b64_json) { $images += "data:image/png;base64,$($item.b64_json)" }
+      elseif ($item.url) { $images += $item.url }
+    }
+  }
+  if ($Payload.images) {
+    foreach ($item in @($Payload.images)) {
+      if ($item -is [string]) { $images += $item }
+      elseif ($item.url) { $images += $item.url }
+      elseif ($item.image_url) { $images += $item.image_url }
+      elseif ($item.output_url) { $images += $item.output_url }
+      elseif ($item.b64_json) { $images += "data:image/png;base64,$($item.b64_json)" }
+    }
+  }
+  if ($Payload.image) { $images += $Payload.image }
+  if ($Payload.image_url) { $images += $Payload.image_url }
+  if ($Payload.output_url) { $images += $Payload.output_url }
+  if ($Payload.url) { $images += $Payload.url }
+  if ($Payload.result.url) { $images += $Payload.result.url }
+  if ($Payload.result.image) { $images += $Payload.result.image }
+  if ($Payload.result.image_url) { $images += $Payload.result.image_url }
+  if ($Payload.result.output_url) { $images += $Payload.result.output_url }
+  if ($Payload.b64_json) { $images += "data:image/png;base64,$($Payload.b64_json)" }
+  return @($images)
+}
+
+function Get-TaskId($Payload) {
+  if ($Payload.id) { return [string]$Payload.id }
+  if ($Payload.task_id) { return [string]$Payload.task_id }
+  if ($Payload.data.id) { return [string]$Payload.data.id }
+  if ($Payload.data.task_id) { return [string]$Payload.data.task_id }
+  if ($Payload.data -and $Payload.data.Count -gt 0 -and $Payload.data[0].task_id) { return [string]$Payload.data[0].task_id }
+  return ""
+}
+
+function Wait-GenerationTask($Api, $Payload, $Endpoint = $null) {
+  $taskId = Get-TaskId $Payload
+  if (!$taskId) { return @() }
+  $endpointValue = $(if ($Endpoint) { [string]$Endpoint } else { [string]$Api.endpoint })
+  $statusUrl = "$($endpointValue.TrimEnd('/'))/$([Uri]::EscapeDataString($taskId))"
+  $headers = @{ Authorization = "Bearer $($Api.apiKey)" }
+  for ($i = 0; $i -lt 60; $i++) {
+    Start-Sleep -Seconds 2
+    try {
+      $result = Invoke-RestMethod -Method Get -Uri $statusUrl -Headers $headers -TimeoutSec 60
+    } catch {
+      throw "查询生成任务失败：$($_.Exception.Message)"
+    }
+    $images = @(Get-ImagesFromPayload $result)
+    if ($images.Count -gt 0) { return @($images) }
+    if ($result.status -eq "failed") {
+      $message = $(if ($result.error.message) { $result.error.message } elseif ($result.fail_reason) { $result.fail_reason } elseif ($result.message) { $result.message } else { "生成任务失败" })
+      throw $message
+    }
+  }
+  throw "生成任务超时，请稍后在记录中查看或重试"
+}
+
+function Save-GeneratedImages($Images) {
+  Ensure-Data
+  $saved = @()
+  $items = @(Get-ValueList $Images)
+  for ($i = 0; $i -lt $items.Count; $i++) {
+    $src = [string]$items[$i]
+    $match = [regex]::Match($src, '^data:([^;,]+);base64,(.+)$')
+    if (!$match.Success) {
+      $saved += $src
+      continue
+    }
+    $mime = $match.Groups[1].Value
+    $ext = "png"
+    if ($mime -match 'jpeg') { $ext = "jpg" }
+    elseif ($mime -match 'webp') { $ext = "webp" }
+    $fileName = "$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())-$([Guid]::NewGuid())-$($i + 1).$ext"
+    [IO.File]::WriteAllBytes((Join-Path $GeneratedDir $fileName), [Convert]::FromBase64String($match.Groups[2].Value))
+    $saved += "/generated/$fileName"
+  }
+  return @($saved)
+}
+
+function Invoke-ImageApi($Api, [string]$Prompt, $Reference, [int]$Count) {
+  if ($Count -lt 1) { $Count = 1 }
+  if ($Count -gt 9) { $Count = 9 }
+  $images = @()
+  $headers = @{ Authorization = "Bearer $($Api.apiKey)" }
+  $refs = @(Get-ValueList $Reference)
+  $isGptImage = Test-GptImageModel $Api.model
+  $requestSize = $(if ($Api.size) { [string]$Api.size } else { "1024x1024" })
+
+  for ($i = 1; $i -le $Count; $i++) {
+    $promptToSend = $Prompt
+    if ($Count -gt 1) {
+      $promptToSend = "$Prompt`n生成第 $i 张图：保持同一主题和比例，构图、细节和镜头语言做自然变化。"
+    }
+    if ($isGptImage -and $refs.Count -gt 0) {
+      $images += @(Invoke-GptImageEdit -Api $Api -Prompt $promptToSend -Refs $refs -Size $requestSize)
+      continue
+    }
+    $body = [ordered]@{
+      model = $Api.model
+      prompt = $promptToSend
+      n = 1
+      size = $requestSize
+    }
+    if (!$isGptImage) {
+      $body["response_format"] = "url"
+      $body["stream"] = $false
+      $body["watermark"] = $true
+      $body["sequential_image_generation"] = "disabled"
+    }
+    if (!$isGptImage) {
+      if ($refs.Count -eq 1) { $body["image"] = $refs[0] }
+      elseif ($refs.Count -gt 1) { $body["image"] = @($refs) }
+    }
+    $json = ($body | ConvertTo-Json -Depth 20)
+    $utf8Body = [Text.Encoding]::UTF8.GetBytes($json)
+  try {
+    $endpoint = $(if ($isGptImage) { Get-ImageEndpoint -Endpoint $Api.endpoint -Action "generations" } else { $Api.endpoint })
+    $result = Invoke-RestMethod -Method Post -Uri $endpoint -Headers $headers -ContentType "application/json; charset=utf-8" -Body $utf8Body -TimeoutSec 180
+  } catch {
+    $detail = $_.Exception.Message
+    if ($_.Exception.Response) {
+      try {
+        $stream = $_.Exception.Response.GetResponseStream()
+        $reader = New-Object IO.StreamReader($stream, [Text.Encoding]::UTF8)
+        $text = $reader.ReadToEnd()
+        if ($text) { $detail = $text }
+      } catch {}
+    }
+    throw $detail
+  }
+    $newImages = @(Get-ImagesFromPayload $result)
+    if ($newImages.Count -eq 0) { $newImages = @(Wait-GenerationTask -Api $Api -Payload $result -Endpoint $endpoint) }
+    $images += @($newImages)
+  }
+
+  if (!$images.Count) { throw "API 返回成功，但未找到图片 URL 或 base64 图片字段" }
+  return $images
+}
+
+function Read-GenerationRecords {
+  if (!(Test-Path $RecordFile)) { return @() }
+  $lines = Get-Content -Path $RecordFile -Encoding UTF8 -Tail 100
+  $records = @()
+  foreach ($line in $lines) {
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    if ($line.Length -gt 200000) { continue }
+    try {
+      $record = ($line | ConvertFrom-Json)
+      if ($record.referencePreviews) {
+        foreach ($preview in @($record.referencePreviews)) {
+          if ($preview.src -and ([string]$preview.src).Length -gt 200000) {
+            $preview.src = ""
+          }
+        }
+      }
+      $records += $record
+    } catch {}
+  }
+  return @($records | Select-Object -Last 100)
+}
+
+function Read-ClientRecords([string]$ClientId) {
+  if (!$ClientId) { return @() }
+  return @(Read-GenerationRecords | Where-Object { $_.clientId -and $_.clientId -eq $ClientId })
+}
+
+function Send-Static($Request, $Response) {
+  $localPath = [Uri]::UnescapeDataString($Request.Url.AbsolutePath)
+  if ($localPath -eq "/") { $localPath = "/index.html" }
+  $target = [IO.Path]::GetFullPath((Join-Path $PublicDir $localPath.TrimStart("/")))
+  $publicFull = [IO.Path]::GetFullPath($PublicDir)
+  if (!$target.StartsWith($publicFull) -or !(Test-Path $target -PathType Leaf)) {
+    $Response.StatusCode = 404
+    $Response.OutputStream.Close()
+    return
+  }
+  $types = @{ ".html" = "text/html; charset=utf-8"; ".css" = "text/css; charset=utf-8"; ".js" = "application/javascript; charset=utf-8" }
+  $ext = [IO.Path]::GetExtension($target)
+  $Response.ContentType = if ($types[$ext]) { $types[$ext] } else { "application/octet-stream" }
+  $bytes = [IO.File]::ReadAllBytes($target)
+  $Response.ContentLength64 = $bytes.Length
+  $Response.OutputStream.Write($bytes, 0, $bytes.Length)
+  $Response.OutputStream.Close()
+}
+
+function Send-Generated($Request, $Response) {
+  Ensure-Data
+  $fileName = [IO.Path]::GetFileName([Uri]::UnescapeDataString($Request.Url.AbsolutePath))
+  $target = [IO.Path]::GetFullPath((Join-Path $GeneratedDir $fileName))
+  $generatedFull = [IO.Path]::GetFullPath($GeneratedDir)
+  if (!$target.StartsWith($generatedFull) -or !(Test-Path $target -PathType Leaf)) {
+    $Response.StatusCode = 404
+    $Response.OutputStream.Close()
+    return
+  }
+  $types = @{ ".png" = "image/png"; ".jpg" = "image/jpeg"; ".jpeg" = "image/jpeg"; ".webp" = "image/webp" }
+  $ext = [IO.Path]::GetExtension($target)
+  $Response.ContentType = if ($types[$ext]) { $types[$ext] } else { "application/octet-stream" }
+  $bytes = [IO.File]::ReadAllBytes($target)
+  $Response.ContentLength64 = $bytes.Length
+  $Response.OutputStream.Write($bytes, 0, $bytes.Length)
+  $Response.OutputStream.Close()
+}
+
+function Send-Download($Request, $Response) {
+  $url = Get-QueryParam -Request $Request -Name "url"
+  $name = Get-QueryParam -Request $Request -Name "name"
+  if ($url -and $url -match "^/generated/") {
+    $fileName = [IO.Path]::GetFileName($url)
+    $target = [IO.Path]::GetFullPath((Join-Path $GeneratedDir $fileName))
+    $generatedFull = [IO.Path]::GetFullPath($GeneratedDir)
+    if (!$target.StartsWith($generatedFull) -or !(Test-Path $target -PathType Leaf)) {
+      Send-Json $Response 404 @{ error = "图片不存在" }
+      return
+    }
+    if (!$name) { $name = $fileName }
+    $safeName = ($name -replace '[\\/:*?"<>|]', "_")
+    $encodedName = [Uri]::EscapeDataString($safeName)
+    Send-Binary $Response 200 ([IO.File]::ReadAllBytes($target)) "application/octet-stream" @{
+      "Content-Disposition" = "attachment; filename=`"$safeName`"; filename*=UTF-8''$encodedName"
+      "Cache-Control" = "no-store"
+    }
+    return
+  }
+  if (!$url -or ($url -notmatch "^https?://")) {
+    Send-Json $Response 400 @{ error = "下载地址无效" }
+    return
+  }
+  if (!$name) { $name = "ai-image.png" }
+  $safeName = ($name -replace '[\\/:*?"<>|]', "_")
+  try {
+    $client = New-Object Net.WebClient
+    $bytes = $client.DownloadData($url)
+    $contentType = $client.ResponseHeaders["Content-Type"]
+    if (!$contentType) { $contentType = "application/octet-stream" }
+    $encodedName = [Uri]::EscapeDataString($safeName)
+    Send-Binary $Response 200 $bytes $contentType @{
+      "Content-Disposition" = "attachment; filename=`"$safeName`"; filename*=UTF-8''$encodedName"
+      "Cache-Control" = "no-store"
+    }
+  } catch {
+    Send-Json $Response 502 @{ error = "图片下载失败：$($_.Exception.Message)" }
+  } finally {
+    if ($client) { $client.Dispose() }
+  }
+}
+
+function Handle-Request($Context) {
+  $req = $Context.Request
+  $res = $Context.Response
+  try {
+    $path = $req.Url.AbsolutePath
+
+    if ($req.HttpMethod -eq "GET" -and $path.StartsWith("/generated/")) {
+      Send-Generated $req $res
+      return
+    }
+
+    if ($req.HttpMethod -eq "GET" -and $path -eq "/api/models") {
+      $config = Read-Config
+      Send-Json $res 200 @{ models = @(Get-PublicApis $config) }
+      return
+    }
+
+    if ($req.HttpMethod -eq "GET" -and $path -eq "/api/download") {
+      Send-Download $req $res
+      return
+    }
+
+    if ($req.HttpMethod -eq "GET" -and $path -eq "/api/records") {
+      $clientId = Get-QueryParam -Request $req -Name "clientId"
+      if (!$clientId) { Send-Json $res 400 @{ error = "缺少本机记录标识" }; return }
+      Send-Json $res 200 @{ records = @(Read-ClientRecords -ClientId $clientId) }
+      return
+    }
+
+    if ($req.HttpMethod -eq "GET" -and $path -eq "/api/admin/config") {
+      if (!(Test-Admin $req)) { Send-Json $res 401 @{ error = "请先登录管理员账号" }; return }
+      $config = Read-Config
+      $apis = @()
+      foreach ($api in @($config.apis)) {
+        $copy = [ordered]@{}
+        foreach ($prop in $api.PSObject.Properties) { $copy[$prop.Name] = $prop.Value }
+        $copy.apiKey = if ($copy.apiKey) { "********" } else { "" }
+        $apis += $copy
+      }
+      Send-Json $res 200 @{ username = $config.admin.username; apis = @($apis) }
+      return
+    }
+
+    if ($req.HttpMethod -eq "GET" -and $path -eq "/api/admin/records") {
+      if (!(Test-Admin $req)) { Send-Json $res 401 @{ error = "请先登录管理员账号" }; return }
+      Send-Json $res 200 @{ records = @(Read-GenerationRecords) }
+      return
+    }
+
+    if ($req.HttpMethod -eq "POST" -and $path -eq "/api/admin/login") {
+      $body = Read-Body $req
+      $config = Read-Config
+      $ok = ($body.username -eq $config.admin.username -and (Get-PasswordHash -Password ([string]$body.password) -Salt $config.admin.salt) -eq $config.admin.hash)
+      if (!$ok) { Send-Json $res 401 @{ error = "管理员账号或密码错误" }; return }
+      $bytes = New-Object byte[] 32
+      $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+      $rng.GetBytes($bytes)
+      $rng.Dispose()
+      $token = [BitConverter]::ToString($bytes).Replace("-", "").ToLowerInvariant()
+      $Sessions[$token] = [DateTimeOffset]::UtcNow.AddHours(8).ToUnixTimeSeconds()
+      Send-Json $res 200 @{ ok = $true } @{ "Set-Cookie" = "admin_session=$token; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800" }
+      return
+    }
+
+    if ($req.HttpMethod -eq "POST" -and $path -eq "/api/generate") {
+      $body = Read-Body $req
+      $visitor = ([string]$body.visitor).Trim()
+      $clientId = ([string]$body.clientId).Trim()
+      $prompt = ([string]$body.prompt).Trim()
+      $originalPrompt = ([string]$body.originalPrompt).Trim()
+      $aspect = ([string]$body.aspect).Trim()
+      $modelId = ([string]$body.modelId).Trim()
+      $reference = @()
+      if ($body.reference -is [array]) {
+        $reference = @(Get-ValueList $body.reference)
+      } elseif ($body.reference) {
+        $reference = @([string]$body.reference)
+      }
+      $referenceName = ([string]$body.referenceName).Trim()
+      $referencePreviews = @(Get-ReferencePreviews -Names $referenceName -References $reference -IncomingPreviews $body.referencePreviews)
+      $count = 1
+      try { $count = [int]$body.count } catch { $count = 1 }
+      if ($count -lt 1) { $count = 1 }
+      if ($count -gt 9) { $count = 9 }
+      if (!$visitor) { Send-Json $res 400 @{ error = "请先填写访问者身份" }; return }
+      if (!$prompt) { Send-Json $res 400 @{ error = "Prompt 不能为空" }; return }
+      $config = Read-Config
+      $api = @($config.apis) | Where-Object { $_.id -eq $modelId -and $_.enabled -ne $false } | Select-Object -First 1
+      if (!$api) { Send-Json $res 400 @{ error = "请选择可用的生图模型" }; return }
+      $time = [DateTime]::UtcNow.ToString("o")
+      try {
+        $rawImages = @(Invoke-ImageApi -Api $api -Prompt $prompt -Reference $reference -Count $count)
+        $images = @(Save-GeneratedImages $rawImages)
+        Add-Log ([ordered]@{
+          time = $time
+          visitor = $visitor
+          clientId = $clientId
+          model = $api.name
+          modelId = $api.id
+          prompt = $(if ($originalPrompt) { $originalPrompt } else { $prompt })
+          aspect = $aspect
+          referenceName = $(if ($referenceName) { $referenceName } else { "无" })
+          referencePreviews = @($referencePreviews)
+          count = $images.Count
+          outputs = @($images)
+          status = "success"
+        })
+        Send-Json $res 200 @{ images = @($images); image = $images[0] }
+      } catch {
+        Add-Log ([ordered]@{
+          time = $time
+          visitor = $visitor
+          clientId = $clientId
+          model = $api.name
+          modelId = $api.id
+          prompt = $(if ($originalPrompt) { $originalPrompt } else { $prompt })
+          aspect = $aspect
+          referenceName = $(if ($referenceName) { $referenceName } else { "无" })
+          referencePreviews = @($referencePreviews)
+          count = $count
+          outputs = @()
+          status = "failed"
+          error = $_.Exception.Message
+        })
+        Send-Json $res 502 @{ error = $_.Exception.Message }
+      }
+      return
+    }
+
+    if ($req.HttpMethod -eq "POST" -and $path -eq "/api/admin/apis") {
+      if (!(Test-Admin $req)) { Send-Json $res 401 @{ error = "请先登录管理员账号" }; return }
+      $body = Read-Body $req
+      $config = Read-Config
+      $id = if ($body.id) { [string]$body.id } else { [guid]::NewGuid().ToString("N") }
+      $incoming = [ordered]@{
+        id = $id
+        name = ([string]$body.name).Trim()
+        model = ([string]$body.model).Trim()
+        endpoint = ([string]$body.endpoint).Trim()
+        apiKey = ([string]$body.apiKey).Trim()
+        size = $(if ($body.size) { ([string]$body.size).Trim() } else { "1024x1024" })
+        enabled = ($body.enabled -ne $false)
+      }
+      $current = @($config.apis) | Where-Object { $_.id -eq $id } | Select-Object -First 1
+      if ($incoming.apiKey -eq "********" -and $current) { $incoming.apiKey = $current.apiKey }
+      if (!$incoming.name) { Send-Json $res 400 @{ error = "模型显示名称不能为空" }; return }
+      if (!$incoming.model) { Send-Json $res 400 @{ error = "模型 ID 不能为空" }; return }
+      if (!$incoming.endpoint) { Send-Json $res 400 @{ error = "API 地址不能为空" }; return }
+      if (!$incoming.apiKey) { Send-Json $res 400 @{ error = "API Key 不能为空" }; return }
+      $apis = @($config.apis) | Where-Object { $_.id -ne $id }
+      $config.apis = @($apis + [pscustomobject]$incoming)
+      Save-Config $config
+      Send-Json $res 200 @{ ok = $true; api = $incoming }
+      return
+    }
+
+    if ($req.HttpMethod -eq "DELETE" -and $path.StartsWith("/api/admin/apis/")) {
+      if (!(Test-Admin $req)) { Send-Json $res 401 @{ error = "请先登录管理员账号" }; return }
+      $id = [Uri]::UnescapeDataString($path.Substring("/api/admin/apis/".Length))
+      $config = Read-Config
+      $config.apis = @(@($config.apis) | Where-Object { $_.id -ne $id })
+      Save-Config $config
+      Send-Json $res 200 @{ ok = $true }
+      return
+    }
+
+    if ($req.HttpMethod -eq "POST" -and $path -eq "/api/admin/password") {
+      if (!(Test-Admin $req)) { Send-Json $res 401 @{ error = "请先登录管理员账号" }; return }
+      $body = Read-Body $req
+      $config = Read-Config
+      $ok = ($body.currentUsername -eq $config.admin.username -and (Get-PasswordHash -Password ([string]$body.currentPassword) -Salt $config.admin.salt) -eq $config.admin.hash)
+      if (!$ok) { Send-Json $res 401 @{ error = "当前管理员账号或密码错误" }; return }
+      $nextUser = ([string]$body.nextUsername).Trim()
+      $nextPass = [string]$body.nextPassword
+      if (!$nextUser -or $nextPass.Length -lt 6) { Send-Json $res 400 @{ error = "新账号不能为空，新密码至少 6 位" }; return }
+      $bytes = New-Object byte[] 16
+      $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+      $rng.GetBytes($bytes)
+      $rng.Dispose()
+      $salt = [BitConverter]::ToString($bytes).Replace("-", "").ToLowerInvariant()
+      $config.admin = [ordered]@{ username = $nextUser; salt = $salt; hash = (Get-PasswordHash -Password $nextPass -Salt $salt) }
+      Save-Config $config
+      Send-Json $res 200 @{ ok = $true }
+      return
+    }
+
+    if ($req.HttpMethod -eq "GET") { Send-Static $req $res; return }
+    $res.StatusCode = 405
+    $res.OutputStream.Close()
+  } catch {
+    try { Send-Json $res 500 @{ error = $_.Exception.Message } } catch {}
+  }
+}
+
+Ensure-Data
+$listener = [Net.HttpListener]::new()
+$listener.Prefixes.Add("http://127.0.0.1:$Port/")
+$listener.Start()
+Write-Host "AI image admin site running at http://127.0.0.1:$Port"
+try {
+  while ($listener.IsListening) {
+    $context = $listener.GetContext()
+    Handle-Request $context
+  }
+} finally {
+  $listener.Stop()
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
