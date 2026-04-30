@@ -7,6 +7,7 @@ $GeneratedDir = Join-Path $DataDir "generated"
 $ConfigFile = Join-Path $DataDir "config.json"
 $LogFile = Join-Path $DataDir "generations.jsonl"
 $RecordFile = Join-Path $DataDir "records.jsonl"
+$PromptRecordFile = Join-Path $DataDir "prompt-records.jsonl"
 $Port = if ($env:PORT) { [int]$env:PORT } else { 3000 }
 $Sessions = [hashtable]::Synchronized(@{})
 $DataLock = New-Object object
@@ -71,6 +72,7 @@ function Get-CompactRecord($Entry) {
   return [ordered]@{
     time = $Entry.time
     visitor = $Entry.visitor
+    requestMode = $Entry.requestMode
     clientId = $Entry.clientId
     model = $Entry.model
     modelId = $Entry.modelId
@@ -83,6 +85,31 @@ function Get-CompactRecord($Entry) {
     status = $Entry.status
     error = $Entry.error
   }
+}
+
+function Get-ApiRequestMode([string]$Endpoint) {
+  $text = ([string]$Endpoint).ToLowerInvariant()
+  if ($text -match '/images?/(edit|edits)/?$') { return "edit" }
+  return "generation"
+}
+
+function Get-PayloadMessage($Payload, [string]$Fallback = "") {
+  if ($null -eq $Payload) { return $Fallback }
+  if ($Payload.PSObject.Properties["error"] -and $Payload.error) {
+    if ($Payload.error -is [string] -and [string]::IsNullOrWhiteSpace([string]$Payload.error) -eq $false) {
+      return [string]$Payload.error
+    }
+    if ($Payload.error.PSObject.Properties["message"] -and [string]::IsNullOrWhiteSpace([string]$Payload.error.message) -eq $false) {
+      return [string]$Payload.error.message
+    }
+  }
+  if ($Payload.PSObject.Properties["message"] -and [string]::IsNullOrWhiteSpace([string]$Payload.message) -eq $false) {
+    return [string]$Payload.message
+  }
+  if ($Payload.PSObject.Properties["fail_reason"] -and [string]::IsNullOrWhiteSpace([string]$Payload.fail_reason) -eq $false) {
+    return [string]$Payload.fail_reason
+  }
+  return $Fallback
 }
 
 function Get-ReferencePreviews($Names, $References, $IncomingPreviews) {
@@ -136,6 +163,22 @@ function Test-GptImageModel($Model) {
   return ([string]$Model) -match '^gpt-image-'
 }
 
+function Get-CleanHeaderValue($Value, [string]$FieldName) {
+  $text = ([string]$Value).Normalize([Text.NormalizationForm]::FormKC).Trim()
+  $text = $text -replace '^(?i)Bearer\s+', ''
+  foreach ($ch in $text.ToCharArray()) {
+    if ([int][char]$ch -gt 255) {
+      throw "$FieldName 包含不能用于 HTTP 请求头的字符：$ch。请检查是否复制了中文括号、中文说明或多余空格。"
+    }
+  }
+  return $text
+}
+
+function Get-AuthHeaders($Api) {
+  $apiKey = Get-CleanHeaderValue $Api.apiKey "API Key"
+  return @{ Authorization = "Bearer $apiKey" }
+}
+
 function Get-ImageEndpoint($Endpoint, [string]$Action) {
   try {
     $builder = [UriBuilder]::new([string]$Endpoint)
@@ -180,7 +223,7 @@ function Invoke-GptImageEdit($Api, [string]$Prompt, $Refs, [string]$Size) {
   $form = [System.Net.Http.MultipartFormDataContent]::new()
   $imageCount = 0
   try {
-    $client.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", [string]$Api.apiKey)
+    $client.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", (Get-CleanHeaderValue $Api.apiKey "API Key"))
     $form.Add([System.Net.Http.StringContent]::new([string]$Api.model), "model")
     $form.Add([System.Net.Http.StringContent]::new($Prompt), "prompt")
     $form.Add([System.Net.Http.StringContent]::new("1"), "n")
@@ -207,7 +250,7 @@ function Invoke-GptImageEdit($Api, [string]$Prompt, $Refs, [string]$Size) {
     $text = $response.Content.ReadAsStringAsync().Result
     try { $payload = ($text | ConvertFrom-Json) } catch { $payload = $null }
     if (!$response.IsSuccessStatusCode) {
-      $message = $(if ($payload.error.message) { $payload.error.message } elseif ($payload.message) { $payload.message } else { $text })
+      $message = Get-PayloadMessage -Payload $payload -Fallback $text
       throw $message
     }
     $images = @(Get-ImagesFromPayload $payload)
@@ -226,7 +269,7 @@ function Invoke-UploadReferenceImage($Api, $DataUrl, [int]$Index) {
   $client = [System.Net.Http.HttpClient]::new()
   $form = [System.Net.Http.MultipartFormDataContent]::new()
   try {
-    $client.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", [string]$Api.apiKey)
+    $client.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", (Get-CleanHeaderValue $Api.apiKey "API Key"))
     $fileContent = [System.Net.Http.ByteArrayContent]::new([byte[]]$file.bytes)
     $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse([string]$file.mime)
     $form.Add($fileContent, "file", [string]$file.name)
@@ -235,10 +278,10 @@ function Invoke-UploadReferenceImage($Api, $DataUrl, [int]$Index) {
     $text = $response.Content.ReadAsStringAsync().Result
     try { $payload = ($text | ConvertFrom-Json) } catch { $payload = $null }
     if (!$response.IsSuccessStatusCode -or ($payload -and $payload.success -eq $false)) {
-      $message = $(if ($payload.error.message) { $payload.error.message } elseif ($payload.message) { $payload.message } else { $text })
+      $message = Get-PayloadMessage -Payload $payload -Fallback $text
       throw "上传参考图失败：$message"
     }
-    $url = $(if ($payload.data.url) { $payload.data.url } elseif ($payload.url) { $payload.url } elseif ($payload.image_url) { $payload.image_url } else { "" })
+    $url = $(if ($payload -and $payload.PSObject.Properties["data"] -and $payload.data -and $payload.data.PSObject.Properties["url"] -and $payload.data.url) { $payload.data.url } elseif ($payload -and $payload.PSObject.Properties["url"] -and $payload.url) { $payload.url } elseif ($payload -and $payload.PSObject.Properties["image_url"] -and $payload.image_url) { $payload.image_url } else { "" })
     if (!$url) { throw "参考图上传成功，但未返回图片 URL" }
     return [string]$url
   } finally {
@@ -316,11 +359,243 @@ function Test-Admin($Request) {
 function Get-PublicApis($Config) {
   $items = @()
   foreach ($api in @($Config.apis)) {
-    if ($api.enabled -ne $false) {
-      $items += [ordered]@{ id = $api.id; name = $api.name; model = $api.model; size = $(if ($api.size) { $api.size } else { "1024x1024" }) }
+    $requestModes = @()
+    if ($api.requestModes -is [array]) {
+      $requestModes = @($api.requestModes | Where-Object { $_ -in @("generation", "edit") } | ForEach-Object { [string]$_ })
+    } elseif ($api.requestMode) {
+      $requestModes = @([string]$api.requestMode)
+    } elseif ($api.enabled -ne $false) {
+      $requestModes = @(Get-ApiRequestMode ([string]$api.endpoint))
+    }
+    if ($requestModes.Count -gt 0 -and $api.enabled -ne $false) {
+      $items += [ordered]@{
+        id = $api.id
+        name = $api.name
+        model = $api.model
+        size = $(if ($api.size) { $api.size } else { "1024x1024" })
+        requestModes = @($requestModes)
+        requestMode = $requestModes[0]
+      }
     }
   }
   return $items
+}
+
+function Get-PublicLlmApis($Config) {
+  $items = @()
+  foreach ($api in @($Config.llmApis)) {
+    if ($api.enabled -ne $false) {
+      $items += [ordered]@{
+        id = $api.id
+        name = $api.name
+        model = $api.model
+        endpoint = $api.endpoint
+        temperature = $(if ($null -ne $api.temperature) { [double]$api.temperature } else { 0.4 })
+      }
+    }
+  }
+  return $items
+}
+
+function Ensure-LlmApisProperty($Config) {
+  if (-not $Config.PSObject.Properties["llmApis"]) {
+    $Config | Add-Member -NotePropertyName llmApis -NotePropertyValue @()
+  }
+}
+
+function Add-PromptRecord($Entry) {
+  [Threading.Monitor]::Enter($DataLock)
+  try {
+    Add-Content -Path $PromptRecordFile -Value (ConvertTo-JsonText $Entry) -Encoding UTF8
+  } finally {
+    [Threading.Monitor]::Exit($DataLock)
+  }
+}
+
+function Read-PromptRecords {
+  if (!(Test-Path $PromptRecordFile)) { return @() }
+  $lines = Get-Content -Path $PromptRecordFile -Encoding UTF8 -Tail 200
+  $records = @()
+  foreach ($line in $lines) {
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    try { $records += ($line | ConvertFrom-Json) } catch {}
+  }
+  return @($records)
+}
+
+function Read-ClientPromptRecords([string]$ClientId) {
+  if (!$ClientId) { return @() }
+  return @(Read-PromptRecords | Where-Object { $_.clientId -and $_.clientId -eq $ClientId })
+}
+
+function Get-ChatEndpoint($Endpoint) {
+  $text = ([string]$Endpoint).Trim()
+  if (!$text) { return "" }
+  if ($text -match '/responses/?$') { return $text }
+  if ($text -match '/chat/completions/?$') { return $text }
+  if ($text -match '/v1/?$') { return ($text.TrimEnd('/') + '/chat/completions') }
+  return ($text.TrimEnd('/') + '/chat/completions')
+}
+
+function Get-PromptSystemText([string]$Mode) {
+  if ($Mode -eq "edit") {
+    return @"
+你是图像任务 Prompt 编排器。
+你不会生成图片，你只输出结构化 prompt 文本。
+当前模式是 edit。
+你必须只输出 1 张卡片，内容为自然语言 Prompt，用于直接改图。
+输出必须是严格 JSON，对象结构为 {"cards":[{"title":"","subtitle":"","content":""}]}。
+不要输出 markdown 代码块，不要输出额外解释。
+卡片 content 只能是自然语言 Prompt，不要输出 JSON，不要输出字段名。
+Prompt 要清楚表达：基于上传原图进行局部修改、保留什么、修改什么、未提及区域不变、光影材质边缘自然融合、负向约束。
+"@
+  }
+  if ($Mode -eq "reference") {
+    return @"
+你是图像任务 Prompt 编排器。
+你不会生成图片，你只输出结构化 prompt 文本。
+当前模式是 reference。
+你必须只输出 1 张卡片，内容为自然语言 Prompt，用于参考图生图。
+输出必须是严格 JSON，对象结构为 {"cards":[{"title":"","subtitle":"","content":""}]}。
+不要输出 markdown 代码块，不要输出额外解释。
+卡片 content 只能是自然语言 Prompt，不要输出 JSON，不要输出字段名。
+Prompt 要清楚表达参考图如何使用、主体、风格、构图、材质、特效和负向约束。
+"@
+  }
+  return @"
+你是图像任务 Prompt 编排器。
+你不会生成图片，你只输出结构化 prompt 文本。
+当前模式是 text。
+你必须只输出 1 张卡片，内容为自然语言 Prompt，用于纯文生图。
+输出必须是严格 JSON，对象结构为 {"cards":[{"title":"","subtitle":"","content":""}]}。
+不要输出 markdown 代码块，不要输出额外解释。
+卡片 content 只能是自然语言 Prompt，不要输出 JSON，不要输出字段名。
+"@
+}
+
+function Get-AssistantContentText($Payload) {
+  if ($Payload.output_text) { return [string]$Payload.output_text }
+  if ($Payload.output) {
+    $parts = @()
+    foreach ($output in @($Payload.output)) {
+      foreach ($item in @($output.content)) {
+        if ($item.text) { $parts += [string]$item.text }
+        elseif ($item.content) { $parts += [string]$item.content }
+      }
+    }
+    if ($parts.Count) { return ($parts -join "`n").Trim() }
+  }
+  if ($Payload.choices -and $Payload.choices.Count -gt 0) {
+    $message = $Payload.choices[0].message
+    if ($message.content -is [string]) { return [string]$message.content }
+    $parts = @()
+    foreach ($item in @($message.content)) {
+      if ($item.text) { $parts += [string]$item.text }
+      elseif ($item.content) { $parts += [string]$item.content }
+    }
+    return ($parts -join "`n").Trim()
+  }
+  return ""
+}
+
+function Parse-PromptCards([string]$Text) {
+  $raw = $Text.Trim() -replace '^```json\s*', '' -replace '^```\s*', '' -replace '\s*```$', ''
+  $start = $raw.IndexOf('{')
+  $end = $raw.LastIndexOf('}')
+  if ($start -ge 0 -and $end -gt $start) {
+    $raw = $raw.Substring($start, $end - $start + 1)
+  }
+  try {
+    $payload = $raw | ConvertFrom-Json
+  } catch {
+    return @([ordered]@{
+      title = "模型返回 Prompt"
+      subtitle = "模型未返回标准 JSON，已保留原始文本"
+      content = $Text.Trim()
+    })
+  }
+  $cards = @()
+  foreach ($card in @($payload.cards)) {
+    if ($card.title -and $card.content) {
+      $cards += [ordered]@{
+        title = [string]$card.title
+        subtitle = [string]$card.subtitle
+        content = [string]$card.content
+      }
+    }
+  }
+  return @($cards)
+}
+
+function Invoke-PromptOrchestratorLlm($Api, $Body) {
+  $endpoint = Get-ChatEndpoint $Api.endpoint
+  if (!$endpoint) { throw "LLM API 地址不能为空" }
+  $isResponsesApi = $endpoint -match '/responses/?$'
+  $systemText = Get-PromptSystemText ([string]$Body.mode)
+  $preserveText = if (@($Body.preserve).Count) { (@($Body.preserve) -join " | ") } else { "无" }
+  $negativeText = if (@($Body.negative).Count) { (@($Body.negative) -join " | ") } else { "无" }
+  $userText = @"
+mode: $([string]$Body.mode)
+aspectRatio: $([string]$Body.aspectRatio)
+styleTone: $([string]$Body.styleTone)
+description: $([string]$Body.description)
+preserve: $preserveText
+negative: $negativeText
+imageCount: $(@(Get-ValueList $Body.imageDataUrls).Count)
+"@
+  $content = @(
+    [ordered]@{ type = "text"; text = $userText.Trim() }
+  )
+  $imageUrls = @(Get-ValueList $Body.imageDataUrls)
+  if (!$imageUrls.Count -and $Body.imageDataUrl) { $imageUrls = @([string]$Body.imageDataUrl) }
+  foreach ($imageUrl in $imageUrls) {
+    $content += [ordered]@{ type = "image_url"; image_url = [ordered]@{ url = [string]$imageUrl } }
+  }
+  if ($isResponsesApi) {
+    $responseContent = @(
+      [ordered]@{ type = "input_text"; text = ($systemText.Trim() + "`n`n用户输入：`n" + $userText.Trim()) }
+    )
+    foreach ($imageUrl in $imageUrls) {
+      $responseContent += [ordered]@{ type = "input_image"; image_url = [string]$imageUrl }
+    }
+    $requestBody = [ordered]@{
+      model = [string]$Api.model
+      input = @(
+        [ordered]@{ role = "user"; content = @($responseContent) }
+      )
+    }
+  } else {
+    $requestBody = [ordered]@{
+      model = [string]$Api.model
+      temperature = $(if ($null -ne $Api.temperature) { [double]$Api.temperature } else { 0.4 })
+      messages = @(
+        [ordered]@{ role = "system"; content = $systemText.Trim() },
+        [ordered]@{ role = "user"; content = @($content) }
+      )
+      response_format = [ordered]@{ type = "json_object" }
+    }
+  }
+  $headers = Get-AuthHeaders $Api
+  $json = ($requestBody | ConvertTo-Json -Depth 30)
+  $utf8Body = [Text.Encoding]::UTF8.GetBytes($json)
+  try {
+    $result = Invoke-RestMethod -Method Post -Uri $endpoint -Headers $headers -ContentType "application/json; charset=utf-8" -Body $utf8Body -TimeoutSec 180
+  } catch {
+    $detail = $_.Exception.Message
+    if ($_.Exception.Response) {
+      try {
+        $stream = $_.Exception.Response.GetResponseStream()
+        $reader = New-Object IO.StreamReader($stream, [Text.Encoding]::UTF8)
+        $text = $reader.ReadToEnd()
+        if ($text) { $detail = $text }
+      } catch {}
+    }
+    throw $detail
+  }
+  $assistantText = Get-AssistantContentText $result
+  $cards = @(Parse-PromptCards $assistantText)
+  if (!$cards.Count) { throw "LLM 已返回结果，但未能解析出有效 Prompt 卡片" }
+  return @($cards)
 }
 
 function Get-ImagesFromPayload($Payload) {
@@ -372,7 +647,7 @@ function Wait-GenerationTask($Api, $Payload, $Endpoint = $null) {
   if (!$taskId) { return @() }
   $endpointValue = $(if ($Endpoint) { [string]$Endpoint } else { [string]$Api.endpoint })
   $statusUrl = "$($endpointValue.TrimEnd('/'))/$([Uri]::EscapeDataString($taskId))"
-  $headers = @{ Authorization = "Bearer $($Api.apiKey)" }
+  $headers = Get-AuthHeaders $Api
   for ($i = 0; $i -lt 60; $i++) {
     Start-Sleep -Seconds 2
     try {
@@ -383,7 +658,7 @@ function Wait-GenerationTask($Api, $Payload, $Endpoint = $null) {
     $images = @(Get-ImagesFromPayload $result)
     if ($images.Count -gt 0) { return @($images) }
     if ($result.status -eq "failed") {
-      $message = $(if ($result.error.message) { $result.error.message } elseif ($result.fail_reason) { $result.fail_reason } elseif ($result.message) { $result.message } else { "生成任务失败" })
+      $message = Get-PayloadMessage -Payload $result -Fallback "生成任务失败"
       throw $message
     }
   }
@@ -416,7 +691,7 @@ function Invoke-ImageApi($Api, [string]$Prompt, $Reference, [int]$Count) {
   if ($Count -lt 1) { $Count = 1 }
   if ($Count -gt 9) { $Count = 9 }
   $images = @()
-  $headers = @{ Authorization = "Bearer $($Api.apiKey)" }
+  $headers = Get-AuthHeaders $Api
   $refs = @(Get-ValueList $Reference)
   $isGptImage = Test-GptImageModel $Api.model
   $requestSize = $(if ($Api.size) { [string]$Api.size } else { "1024x1024" })
@@ -597,6 +872,13 @@ function Handle-Request($Context) {
       return
     }
 
+    if ($req.HttpMethod -eq "GET" -and $path -eq "/api/llm-models") {
+      $config = Read-Config
+      Ensure-LlmApisProperty $config
+      Send-Json $res 200 @{ models = @(Get-PublicLlmApis $config) }
+      return
+    }
+
     if ($req.HttpMethod -eq "GET" -and $path -eq "/api/download") {
       Send-Download $req $res
       return
@@ -606,6 +888,13 @@ function Handle-Request($Context) {
       $clientId = Get-QueryParam -Request $req -Name "clientId"
       if (!$clientId) { Send-Json $res 400 @{ error = "缺少本机记录标识" }; return }
       Send-Json $res 200 @{ records = @(Read-ClientRecords -ClientId $clientId) }
+      return
+    }
+
+    if ($req.HttpMethod -eq "GET" -and $path -eq "/api/prompt-records") {
+      $clientId = Get-QueryParam -Request $req -Name "clientId"
+      if (!$clientId) { Send-Json $res 400 @{ error = "缺少本机记录标识" }; return }
+      Send-Json $res 200 @{ records = @(Read-ClientPromptRecords -ClientId $clientId) }
       return
     }
 
@@ -623,9 +912,30 @@ function Handle-Request($Context) {
       return
     }
 
+    if ($req.HttpMethod -eq "GET" -and $path -eq "/api/admin/llm-config") {
+      if (!(Test-Admin $req)) { Send-Json $res 401 @{ error = "请先登录管理员账号" }; return }
+      $config = Read-Config
+      Ensure-LlmApisProperty $config
+      $apis = @()
+      foreach ($api in @($config.llmApis)) {
+        $copy = [ordered]@{}
+        foreach ($prop in $api.PSObject.Properties) { $copy[$prop.Name] = $prop.Value }
+        $copy.apiKey = if ($copy.apiKey) { "********" } else { "" }
+        $apis += $copy
+      }
+      Send-Json $res 200 @{ username = $config.admin.username; llmApis = @($apis) }
+      return
+    }
+
     if ($req.HttpMethod -eq "GET" -and $path -eq "/api/admin/records") {
       if (!(Test-Admin $req)) { Send-Json $res 401 @{ error = "请先登录管理员账号" }; return }
       Send-Json $res 200 @{ records = @(Read-GenerationRecords) }
+      return
+    }
+
+    if ($req.HttpMethod -eq "GET" -and $path -eq "/api/admin/prompt-records") {
+      if (!(Test-Admin $req)) { Send-Json $res 401 @{ error = "请先登录管理员账号" }; return }
+      Send-Json $res 200 @{ records = @(Read-PromptRecords) }
       return
     }
 
@@ -676,6 +986,7 @@ function Handle-Request($Context) {
         Add-Log ([ordered]@{
           time = $time
           visitor = $visitor
+          requestMode = Get-ApiRequestMode ([string]$api.endpoint)
           clientId = $clientId
           model = $api.name
           modelId = $api.id
@@ -692,6 +1003,7 @@ function Handle-Request($Context) {
         Add-Log ([ordered]@{
           time = $time
           visitor = $visitor
+          requestMode = Get-ApiRequestMode ([string]$api.endpoint)
           clientId = $clientId
           model = $api.name
           modelId = $api.id
@@ -701,6 +1013,83 @@ function Handle-Request($Context) {
           referencePreviews = @($referencePreviews)
           count = $count
           outputs = @()
+          status = "failed"
+          error = $_.Exception.Message
+        })
+        Send-Json $res 502 @{ error = $_.Exception.Message }
+      }
+      return
+    }
+
+    if ($req.HttpMethod -eq "POST" -and $path -eq "/api/prompt-orchestrator/generate") {
+      $body = Read-Body $req
+      $visitor = ([string]$body.visitor).Trim()
+      $clientId = ([string]$body.clientId).Trim()
+      $mode = ([string]$body.mode).Trim()
+      if (!$mode) { $mode = "text" }
+      $modelId = ([string]$body.modelId).Trim()
+      $description = ([string]$body.description).Trim()
+      $styleTone = ([string]$body.styleTone).Trim()
+      $aspectRatio = ([string]$body.aspectRatio).Trim()
+      if (!$aspectRatio) { $aspectRatio = "16:9" }
+      $preserve = @(Get-ValueList $body.preserve)
+      $negative = @(Get-ValueList $body.negative)
+      $imageDataUrls = @(Get-ValueList $body.imageDataUrls)
+      if (!$imageDataUrls.Count -and $body.imageDataUrl) { $imageDataUrls = @(([string]$body.imageDataUrl).Trim()) }
+      $imageDataUrl = $(if ($imageDataUrls.Count) { [string]$imageDataUrls[0] } else { "" })
+      if (!$visitor) { Send-Json $res 400 @{ error = "请先填写访问者身份" }; return }
+      if (!$description) { Send-Json $res 400 @{ error = "请先填写需求描述" }; return }
+      if (!$modelId) { Send-Json $res 400 @{ error = "请选择一个可用的 LLM 模型" }; return }
+      $config = Read-Config
+      Ensure-LlmApisProperty $config
+      $api = @($config.llmApis) | Where-Object { $_.id -eq $modelId -and $_.enabled -ne $false } | Select-Object -First 1
+      if (!$api) { Send-Json $res 400 @{ error = "所选 LLM 模型不存在或已停用" }; return }
+      $time = [DateTime]::UtcNow.ToString("o")
+      try {
+        $cards = @(Invoke-PromptOrchestratorLlm $api ([ordered]@{
+          mode = $mode
+          description = $description
+          preserve = @($preserve)
+          negative = @($negative)
+          styleTone = $styleTone
+          aspectRatio = $aspectRatio
+          imageDataUrls = @($imageDataUrls)
+          imageDataUrl = $imageDataUrl
+        }))
+        Add-PromptRecord ([ordered]@{
+          time = $time
+          visitor = $visitor
+          clientId = $clientId
+          mode = $mode
+          model = $api.name
+          modelId = $api.id
+          description = $description
+          styleTone = $styleTone
+          aspectRatio = $aspectRatio
+          preserve = @($preserve)
+          negative = @($negative)
+          inputImagePreview = $(if ($imageDataUrl.Length -le 200000) { $imageDataUrl } else { "" })
+          inputImagePreviews = @($imageDataUrls | Where-Object { ([string]$_).Length -le 200000 })
+          cards = @($cards)
+          status = "success"
+        })
+        Send-Json $res 200 @{ cards = @($cards) }
+      } catch {
+        Add-PromptRecord ([ordered]@{
+          time = $time
+          visitor = $visitor
+          clientId = $clientId
+          mode = $mode
+          model = $api.name
+          modelId = $api.id
+          description = $description
+          styleTone = $styleTone
+          aspectRatio = $aspectRatio
+          preserve = @($preserve)
+          negative = @($negative)
+          inputImagePreview = $(if ($imageDataUrl.Length -le 200000) { $imageDataUrl } else { "" })
+          inputImagePreviews = @($imageDataUrls | Where-Object { ([string]$_).Length -le 200000 })
+          cards = @()
           status = "failed"
           error = $_.Exception.Message
         })
@@ -721,7 +1110,8 @@ function Handle-Request($Context) {
         endpoint = ([string]$body.endpoint).Trim()
         apiKey = ([string]$body.apiKey).Trim()
         size = $(if ($body.size) { ([string]$body.size).Trim() } else { "1024x1024" })
-        enabled = ($body.enabled -ne $false)
+        requestModes = @(@($body.requestModes) | Where-Object { $_ -in @("generation", "edit") } | ForEach-Object { [string]$_ })
+        enabled = @(@($body.requestModes) | Where-Object { $_ -in @("generation", "edit") }).Count -gt 0
       }
       $current = @($config.apis) | Where-Object { $_.id -eq $id } | Select-Object -First 1
       if ($incoming.apiKey -eq "********" -and $current) { $incoming.apiKey = $current.apiKey }
@@ -736,11 +1126,50 @@ function Handle-Request($Context) {
       return
     }
 
+    if ($req.HttpMethod -eq "POST" -and $path -eq "/api/admin/llm-apis") {
+      if (!(Test-Admin $req)) { Send-Json $res 401 @{ error = "请先登录管理员账号" }; return }
+      $body = Read-Body $req
+      $config = Read-Config
+      Ensure-LlmApisProperty $config
+      $id = if ($body.id) { [string]$body.id } else { [guid]::NewGuid().ToString("N") }
+      $incoming = [ordered]@{
+        id = $id
+        name = ([string]$body.name).Trim()
+        model = ([string]$body.model).Trim()
+        endpoint = ([string]$body.endpoint).Trim()
+        apiKey = ([string]$body.apiKey).Trim()
+        temperature = $(if ($null -ne $body.temperature -and "$($body.temperature)".Trim()) { [double]$body.temperature } else { 0.4 })
+        enabled = ($body.enabled -ne $false)
+      }
+      $current = @($config.llmApis) | Where-Object { $_.id -eq $id } | Select-Object -First 1
+      if ($incoming.apiKey -eq "********" -and $current) { $incoming.apiKey = $current.apiKey }
+      if (!$incoming.name) { Send-Json $res 400 @{ error = "LLM 显示名称不能为空" }; return }
+      if (!$incoming.model) { Send-Json $res 400 @{ error = "LLM 模型 ID 不能为空" }; return }
+      if (!$incoming.endpoint) { Send-Json $res 400 @{ error = "LLM API 地址不能为空" }; return }
+      if (!$incoming.apiKey) { Send-Json $res 400 @{ error = "LLM API Key 不能为空" }; return }
+      $apis = @($config.llmApis) | Where-Object { $_.id -ne $id }
+      $config.llmApis = @($apis + [pscustomobject]$incoming)
+      Save-Config $config
+      Send-Json $res 200 @{ ok = $true; api = $incoming }
+      return
+    }
+
     if ($req.HttpMethod -eq "DELETE" -and $path.StartsWith("/api/admin/apis/")) {
       if (!(Test-Admin $req)) { Send-Json $res 401 @{ error = "请先登录管理员账号" }; return }
       $id = [Uri]::UnescapeDataString($path.Substring("/api/admin/apis/".Length))
       $config = Read-Config
       $config.apis = @(@($config.apis) | Where-Object { $_.id -ne $id })
+      Save-Config $config
+      Send-Json $res 200 @{ ok = $true }
+      return
+    }
+
+    if ($req.HttpMethod -eq "DELETE" -and $path.StartsWith("/api/admin/llm-apis/")) {
+      if (!(Test-Admin $req)) { Send-Json $res 401 @{ error = "请先登录管理员账号" }; return }
+      $id = [Uri]::UnescapeDataString($path.Substring("/api/admin/llm-apis/".Length))
+      $config = Read-Config
+      Ensure-LlmApisProperty $config
+      $config.llmApis = @(@($config.llmApis) | Where-Object { $_.id -ne $id })
       Save-Config $config
       Send-Json $res 200 @{ ok = $true }
       return

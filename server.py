@@ -346,6 +346,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     ensure_data()
-    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"AI image admin site running at http://127.0.0.1:{PORT}")
+    httpd = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    print(f"AI image admin site running at http://0.0.0.0:{PORT}")
     httpd.serve_forever()

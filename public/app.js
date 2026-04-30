@@ -1,16 +1,33 @@
 const state = {
   visitor: localStorage.getItem("visitorName") || "",
   clientId: getClientId(),
+  allModels: [],
   models: [],
   editingApi: null,
   references: [],
   canClearReferences: false,
   lastImages: [],
   records: [],
-  userRecords: []
+  userRecords: [],
+  requestMode: "generation",
+  promptFormat: "plain",
+  promptDrafts: {
+    plain: "",
+    json: ""
+  }
 };
+const adminSessionKey = "adminSessionActive";
+const recordModeCacheKey = "previewRecordModeCache";
+const navType = globalThis.performance?.getEntriesByType?.("navigation")?.[0]?.type || "";
+if (navType === "reload") {
+  sessionStorage.removeItem(adminSessionKey);
+}
 
 const $ = (id) => document.getElementById(id);
+const promptPlaceholders = {
+  plain: "描述你想生成的画面、风格、光线、构图等",
+  json: "此处粘贴json字段，将转为合适的请求格式发送至模型"
+};
 
 function getClientId() {
   let id = localStorage.getItem("clientId");
@@ -27,6 +44,44 @@ function setStatus(id, message, isError = false) {
   const node = $(id);
   node.textContent = message || "";
   node.style.color = isError ? "#c93636" : "#647084";
+}
+
+function readRecordModeCache() {
+  try {
+    const raw = localStorage.getItem(recordModeCacheKey);
+    const payload = raw ? JSON.parse(raw) : {};
+    return payload && typeof payload === "object" ? payload : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeRecordModeCache(cache) {
+  localStorage.setItem(recordModeCacheKey, JSON.stringify(cache));
+}
+
+function recordCacheId(record) {
+  return [record.time || "", record.modelId || record.model || "", record.prompt || ""].join("|");
+}
+
+function applyRecordModeCache(records) {
+  const cache = readRecordModeCache();
+  return (records || []).map((record) => {
+    if (record.requestMode) return record;
+    const cachedMode = cache[recordCacheId(record)];
+    return cachedMode ? { ...record, requestMode: cachedMode } : record;
+  });
+}
+
+function rememberLatestRecordMode(records, mode) {
+  const sorted = [...(records || [])].sort((a, b) => new Date(b.time || 0) - new Date(a.time || 0));
+  const latest = sorted[0];
+  if (!latest) return records;
+  const cache = readRecordModeCache();
+  cache[recordCacheId(latest)] = mode;
+  writeRecordModeCache(cache);
+  latest.requestMode = mode;
+  return records.map((record) => record === latest ? latest : (record.time === latest.time && record.modelId === latest.modelId && record.prompt === latest.prompt ? { ...record, requestMode: mode } : record));
 }
 
 async function request(url, options = {}) {
@@ -60,17 +115,25 @@ function showIdentityIfNeeded() {
 
 async function loadModels() {
   const data = await request("/api/models");
-  state.models = data.models || [];
+  state.allModels = data.models || [];
+  renderModelOptions();
+}
+
+function renderModelOptions() {
+  state.models = state.allModels.filter((model) => getApiModes(model).includes(state.requestMode));
   const select = $("modelSelect");
+  const currentValue = select.value;
   select.innerHTML = "";
 
   if (!state.models.length) {
     const option = document.createElement("option");
     option.value = "";
-    option.textContent = "暂无可用模型，请联系管理员配置";
+    option.textContent = state.requestMode === "edit"
+      ? "当前没有可用于 edit 改图的模型，请在管理员中配置"
+      : "当前没有可用于 generation 生图的模型，请联系管理员配置";
     select.append(option);
     $("generateBtn").disabled = true;
-    $("modelHint").textContent = "未配置模型";
+    $("modelHint").textContent = "未配置当前模式的模型";
     return;
   }
 
@@ -80,21 +143,164 @@ async function loadModels() {
     option.textContent = `${model.name} (${model.model})`;
     select.append(option);
   });
+  select.value = state.models.some((model) => model.id === currentValue) ? currentValue : state.models[0].id;
   $("generateBtn").disabled = false;
   updateModelHint();
 }
 
 function updateModelHint() {
   const selected = state.models.find((model) => model.id === $("modelSelect").value);
-  $("modelHint").textContent = selected ? `当前模型：${selected.name} · ${selected.size}` : "等待选择模型";
+  $("modelHint").textContent = selected
+    ? `当前模型：${selected.name} · ${selected.size} · ${state.requestMode === "edit" ? "edit 改图" : "generation 生图"}`
+    : "等待选择模型";
+}
+
+function inferRequestMode(api) {
+  const modes = getApiModes(api);
+  if (modes.length === 1) {
+    return modes[0];
+  }
+  if (modes.includes("generation")) {
+    return "generation";
+  }
+  if (api?.requestMode === "edit" || api?.requestMode === "generation") {
+    return api.requestMode;
+  }
+  const endpointText = String(api?.endpoint || "");
+  if (/\/images?\/(edit|edits)\/?$/i.test(endpointText)) return "edit";
+  const nameText = `${api?.name || ""} ${api?.model || ""}`.toLowerCase();
+  if (/\bedit\b/.test(nameText) || /-edit\b/.test(nameText)) return "edit";
+  if (/\bgeneration\b/.test(nameText) || /\bgenerations\b/.test(nameText) || /-generations\b/.test(nameText)) return "generation";
+  return "generation";
+}
+
+function getApiModes(api) {
+  if (Array.isArray(api?.requestModes)) {
+    return api.requestModes.filter((mode) => mode === "generation" || mode === "edit");
+  }
+  if (api?.requestMode === "edit") return ["edit"];
+  if (api?.requestMode === "generation") return ["generation"];
+  const endpointText = String(api?.endpoint || "");
+  if (/\/images?\/(edit|edits)\/?$/i.test(endpointText)) return ["edit"];
+  return ["generation"];
+}
+
+function getApiModesFromForm() {
+  const modes = [];
+  if ($("apiModeGeneration").checked) modes.push("generation");
+  if ($("apiModeEdit").checked) modes.push("edit");
+  return modes;
+}
+
+function formatApiModes(api) {
+  const modes = getApiModes(api);
+  if (!modes.length) return "未启用";
+  if (modes.length === 2) return "双模式通用";
+  return modes[0] === "edit" ? "edit 改图" : "generation 生图";
 }
 
 function getSelectedAspect() {
   return $("aspectSelect").value || "16:9 横向宽银幕构图";
 }
 
+function syncPromptDraft() {
+  state.promptDrafts[state.promptFormat] = $("promptInput").value;
+}
+
+function renderPromptInput() {
+  const input = $("promptInput");
+  input.value = state.promptDrafts[state.promptFormat] || "";
+  input.placeholder = promptPlaceholders[state.promptFormat];
+  $("plainPromptBtn").classList.toggle("is-active", state.promptFormat === "plain");
+  $("jsonPromptBtn").classList.toggle("is-active", state.promptFormat === "json");
+  $("promptFormatSwitch").classList.toggle("is-second-active", state.promptFormat === "json");
+}
+
+function setPromptFormat(format) {
+  if (!["plain", "json"].includes(format) || format === state.promptFormat) return;
+  syncPromptDraft();
+  state.promptFormat = format;
+  renderPromptInput();
+}
+
+function setRequestMode(mode) {
+  if (!["generation", "edit"].includes(mode) || mode === state.requestMode) return;
+  state.requestMode = mode;
+  $("generationModeBtn").classList.toggle("is-active", mode === "generation");
+  $("editModeBtn").classList.toggle("is-active", mode === "edit");
+  $("requestModeSwitch").classList.toggle("is-second-active", mode === "edit");
+  $("referenceNote").textContent = mode === "edit"
+    ? "edit 改图模式下，请先上传至少一张原图或参考图。"
+    : (state.references.length
+      ? `已选择 ${state.references.length} 张参考图，可在 prompt 中按编号描述。`
+      : "可选，可在 prompt 中描述“参考图 1”的主体或“参考图 2”的风格。");
+  renderModelOptions();
+}
+
+function listText(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item || "").trim()).filter(Boolean);
+}
+
+function normalizePromptFromJson(rawText, aspect) {
+  let payload;
+  try {
+    payload = JSON.parse(rawText);
+  } catch {
+    throw new Error("JSON 输入格式无效，请先检查字段和逗号。");
+  }
+
+  const parts = [];
+  if (payload.plain_prompt) {
+    parts.push(String(payload.plain_prompt).trim());
+  } else if (payload.task === "image_edit") {
+    parts.push(`基于上传的原图进行修改，目标：${payload.goal || payload.edit_area?.target || "按要求调整"}。`);
+    const keep = listText(payload.keep_unchanged);
+    if (keep.length) parts.push(`保持以下内容不变：${keep.join("、")}。`);
+    if (payload.edit_area?.target) parts.push(`重点修改区域：${payload.edit_area.target}。`);
+    const repair = listText(payload.repair_instruction?.fill_with);
+    if (repair.length) parts.push(`修改后请自然补齐并保持：${repair.join("、")}。`);
+    const negative = listText(payload.negative_prompt);
+    if (negative.length) parts.push(`避免：${negative.join("、")}。`);
+  } else {
+    if (payload.generate_target?.subject) parts.push(`生成主体：${payload.generate_target.subject}。`);
+    if (payload.generate_target?.theme) parts.push(`主题方向：${payload.generate_target.theme}。`);
+    const features = listText(payload.design_requirements?.features);
+    if (features.length) parts.push(`关键设计点：${features.join("、")}。`);
+    const negative = listText(payload.negative_prompt);
+    if (negative.length) parts.push(`避免：${negative.join("、")}。`);
+  }
+
+  if (!parts.length) {
+    parts.push(rawText);
+  }
+
+  const merged = parts.join("\n");
+  return merged.includes("画面比例要求")
+    ? merged
+    : `${merged}\n\n画面比例要求：${aspect}。`;
+}
+
+function getPromptPayload(aspect) {
+  const rawPrompt = $("promptInput").value.trim();
+  if (!rawPrompt) {
+    throw new Error(state.promptFormat === "json" ? "请先粘贴 JSON 字段。" : "请先填写 prompt。");
+  }
+
+  if (state.promptFormat === "json") {
+    return {
+      prompt: normalizePromptFromJson(rawPrompt, aspect),
+      originalPrompt: rawPrompt
+    };
+  }
+
+  return {
+    prompt: `${rawPrompt}\n\n画面比例要求：${aspect}。`,
+    originalPrompt: rawPrompt
+  };
+}
+
 async function generateImage() {
-  const prompt = $("promptInput").value.trim();
   const modelId = $("modelSelect").value;
   const aspect = getSelectedAspect();
   const count = Number($("countSelect").value);
@@ -102,12 +308,20 @@ async function generateImage() {
     $("identityModal").classList.remove("hidden");
     return;
   }
-  if (!prompt) {
-    setStatus("statusText", "请先填写 prompt。", true);
-    return;
-  }
   if (!modelId) {
     setStatus("statusText", "请先选择一个已配置的模型。", true);
+    return;
+  }
+  if (state.requestMode === "edit" && !state.references.length) {
+    setStatus("statusText", "edit 改图模式下，请先上传至少一张原图或参考图。", true);
+    return;
+  }
+
+  let promptPayload;
+  try {
+    promptPayload = getPromptPayload(aspect);
+  } catch (error) {
+    setStatus("statusText", error.message, true);
     return;
   }
 
@@ -116,17 +330,18 @@ async function generateImage() {
   setStatus("statusText", "任务已提交，正在调用生图 API。");
 
   try {
-    const finalPrompt = `${prompt}\n\n画面比例要求：${aspect}。`;
     renderLoadingPlaceholders(count, aspect);
     const data = await request("/api/generate", {
       method: "POST",
       body: JSON.stringify({
         visitor: state.visitor,
         clientId: state.clientId,
-        prompt: finalPrompt,
-        originalPrompt: prompt,
+        prompt: promptPayload.prompt,
+        originalPrompt: promptPayload.originalPrompt,
         aspect,
         count,
+        requestMode: state.requestMode,
+        promptFormat: state.promptFormat,
         reference: state.references.map((item) => item.data),
         referenceName: state.references.map((item) => item.name).join("、"),
         referencePreviews: state.references.map((item, index) => ({
@@ -142,6 +357,8 @@ async function generateImage() {
     state.canClearReferences = true;
     updateClearReferencesButton();
     await loadUserRecords();
+    state.userRecords = rememberLatestRecordMode(state.userRecords, state.requestMode);
+    renderRecords(state.userRecords, "userRecordsList");
     setStatus("statusText", `生成完成，共 ${state.lastImages.length} 张，记录已写入后台。`);
   } catch (error) {
     $("imageBox").innerHTML = '<div class="placeholder">生成失败，请检查模型配置或 API 返回。</div>';
@@ -239,6 +456,28 @@ function triggerBlobDownload(href, name) {
 
 function openAdmin() {
   $("adminDialog").showModal();
+  if (sessionStorage.getItem(adminSessionKey) === "1") {
+    showAdminPanel();
+    setStatus("loginStatus", "");
+    loadAdminConfig().catch(() => {
+      sessionStorage.removeItem(adminSessionKey);
+      showAdminLogin();
+    });
+    loadRecords().catch(() => {});
+    return;
+  }
+  showAdminLogin();
+  setStatus("loginStatus", "");
+}
+
+function showAdminLogin() {
+  $("loginForm").classList.remove("hidden");
+  $("adminPanel").classList.add("hidden");
+}
+
+function showAdminPanel() {
+  $("loginForm").classList.add("hidden");
+  $("adminPanel").classList.remove("hidden");
 }
 
 async function loginAdmin(event) {
@@ -249,10 +488,15 @@ async function loginAdmin(event) {
       method: "POST",
       body: JSON.stringify({ username: $("adminUser").value.trim(), password: $("adminPass").value })
     });
-    $("loginForm").classList.add("hidden");
-    $("adminPanel").classList.remove("hidden");
+    sessionStorage.setItem(adminSessionKey, "1");
+    showAdminPanel();
     setStatus("loginStatus", "");
-    await loadAdminConfig();
+    loadAdminConfig().catch((error) => {
+      sessionStorage.removeItem(adminSessionKey);
+      showAdminLogin();
+      setStatus("loginStatus", error.message, true);
+    });
+    loadRecords().catch(() => {});
   } catch (error) {
     setStatus("loginStatus", error.message, true);
   }
@@ -263,7 +507,9 @@ async function loadAdminConfig() {
   $("currentUser").value = data.username || "";
   $("nextUser").value = data.username || "";
   renderApis(data.apis || []);
-  await loadRecords();
+  if (!$("recordsList").children.length) {
+    $("recordsList").innerHTML = '<div class="placeholder">点击“刷新记录”加载管理员记录。</div>';
+  }
 }
 
 function renderApis(apis) {
@@ -278,7 +524,7 @@ function renderApis(apis) {
     const item = document.createElement("div");
     item.className = "api-item";
     const info = document.createElement("div");
-    info.innerHTML = `<strong>${escapeHtml(api.name)}</strong><span>${escapeHtml(api.model)} · ${escapeHtml(api.enabled === false ? "已停用" : "已启用")}</span>`;
+    info.innerHTML = `<strong>${escapeHtml(api.name)}</strong><span>${escapeHtml(api.model)} · ${escapeHtml(formatApiModes(api))}</span>`;
 
     const edit = document.createElement("button");
     edit.type = "button";
@@ -315,7 +561,8 @@ function clearApiForm() {
   $("apiEndpoint").value = "";
   $("apiKey").value = "";
   $("apiSize").value = "1024x1024";
-  $("apiEnabled").checked = true;
+  $("apiModeGeneration").checked = true;
+  $("apiModeEdit").checked = false;
   setStatus("apiStatus", "");
 }
 
@@ -329,13 +576,16 @@ function fillApiForm(api) {
   $("apiEndpoint").value = api.endpoint || "";
   $("apiKey").value = api.apiKey || "";
   $("apiSize").value = api.size || "1024x1024";
-  $("apiEnabled").checked = api.enabled !== false;
+  const modes = getApiModes(api);
+  $("apiModeGeneration").checked = modes.includes("generation");
+  $("apiModeEdit").checked = modes.includes("edit");
   setStatus("apiStatus", "正在编辑已有模型。API Key 保持星号表示不修改。");
 }
 
 async function saveApi(event) {
   event.preventDefault();
   setStatus("apiStatus", "正在保存...");
+  const requestModes = getApiModesFromForm();
   const body = {
     id: $("apiId").value || undefined,
     name: $("apiName").value,
@@ -343,8 +593,13 @@ async function saveApi(event) {
     endpoint: $("apiEndpoint").value,
     apiKey: $("apiKey").value,
     size: $("apiSize").value || "1024x1024",
-    enabled: $("apiEnabled").checked
+    requestModes,
+    enabled: requestModes.length > 0
   };
+
+  if (!requestModes.length) {
+    setStatus("apiStatus", "未选择任何模式，该模型将进入停用状态。");
+  }
 
   try {
     await request("/api/admin/apis", { method: "POST", body: JSON.stringify(body) });
@@ -398,7 +653,7 @@ async function loadRecords() {
   list.innerHTML = '<div class="placeholder">正在读取记录...</div>';
   try {
     const data = await request("/api/admin/records");
-    state.records = data.records || [];
+    state.records = applyRecordModeCache(data.records || []);
     updateRecordFilters("filterUser", state.records);
     renderRecords(getFilteredRecords(state.records, "filterUser", "filterStart", "filterEnd"), "recordsList");
   } catch (error) {
@@ -412,7 +667,7 @@ async function loadUserRecords() {
   list.innerHTML = '<div class="placeholder">正在读取记录...</div>';
   try {
     const data = await request(`/api/records?clientId=${encodeURIComponent(state.clientId)}`);
-    state.userRecords = data.records || [];
+    state.userRecords = applyRecordModeCache(data.records || []);
     renderRecords(state.userRecords, "userRecordsList");
   } catch (error) {
     list.innerHTML = `<div class="placeholder">${escapeHtml(error.message)}</div>`;
@@ -427,19 +682,23 @@ function renderRecords(records, listId = "recordsList") {
     list.innerHTML = '<div class="placeholder">暂无生成记录。</div>';
     return;
   }
-  records.forEach((record) => {
+  [...records]
+    .sort((a, b) => new Date(b.time || 0) - new Date(a.time || 0))
+    .forEach((record) => {
     const item = document.createElement("div");
     item.className = "record-item";
 
     const outputs = Array.isArray(record.outputs) ? record.outputs : record.image ? [record.image] : [];
     const timeText = formatRecordTime(record.time);
     const isSuccess = outputs.some((item) => typeof item === "string" && item.trim());
+    const modeText = record.requestMode === "edit" ? "edit" : "generation";
     const meta = document.createElement("div");
     meta.className = "record-meta";
     if (isUserList) {
       meta.innerHTML = `
         <div class="record-badges">
           <span class="badge user-badge">${escapeHtml(record.visitor || "-")}</span>
+          <span class="badge mode-badge">${escapeHtml(modeText)}</span>
           <span class="badge time-badge">${escapeHtml(timeText)}</span>
           <span class="badge ${isSuccess ? "success-badge" : "failed-badge"}">${isSuccess ? "成功" : "失败"}</span>
         </div>
@@ -451,6 +710,7 @@ function renderRecords(records, listId = "recordsList") {
       meta.innerHTML = `
         <div class="record-badges">
           <span class="badge user-badge">使用者：${escapeHtml(record.visitor || "-")}</span>
+          <span class="badge mode-badge">模式：${escapeHtml(modeText)}</span>
           <span class="badge time-badge">时间：${escapeHtml(timeText)}</span>
           <span class="badge ${isSuccess ? "success-badge" : "failed-badge"}">${isSuccess ? "成功" : "失败"}</span>
         </div>
@@ -482,7 +742,7 @@ function renderRecords(records, listId = "recordsList") {
 
     item.append(meta, actions);
     list.append(item);
-  });
+    });
 }
 
 function updateRecordFilters(selectId, records) {
@@ -651,6 +911,56 @@ function makeReferencePreview(dataUrl) {
   });
 }
 
+async function importPendingImageTask() {
+  const raw = sessionStorage.getItem("pendingImageTask") || localStorage.getItem("pendingImageTask");
+  if (!raw) return;
+  sessionStorage.removeItem("pendingImageTask");
+  localStorage.removeItem("pendingImageTask");
+
+  let task = null;
+  try {
+    task = JSON.parse(raw);
+  } catch {
+    return;
+  }
+
+  const requestMode = String(task.requestMode || "").trim();
+  if (requestMode === "edit" || requestMode === "generation") {
+    setRequestMode(requestMode);
+  }
+
+  const promptFormat = String(task.promptFormat || "").trim();
+  if (promptFormat === "json" || promptFormat === "plain") {
+    setPromptFormat(promptFormat);
+  }
+
+  const prompt = String(task.prompt || "").trim();
+  if (prompt) {
+    state.promptDrafts[state.promptFormat] = prompt;
+    renderPromptInput();
+  }
+
+  const images = Array.isArray(task.images) ? task.images.slice(0, 9) : [];
+  state.references = [];
+  for (const [index, image] of images.entries()) {
+    const data = image?.data || image?.dataUrl || "";
+    if (!String(data).startsWith("data:image/")) continue;
+    state.references.push({
+      name: image.name || `参考图 ${index + 1}.png`,
+      data,
+      preview: data,
+    });
+  }
+
+  state.canClearReferences = false;
+  renderReferenceThumbs();
+  updateClearReferencesButton();
+  $("referenceNote").textContent = state.references.length
+    ? `已从 Prompt 优化器导入 ${state.references.length} 张参考图，顺序已保留。`
+    : "已从 Prompt 优化器导入提示词，未携带参考图。";
+  setStatus("statusText", "已从 Prompt 优化器导入内容，可继续选择模型和参数生成图片。");
+}
+
 
 function removeReference(index) {
   state.references.splice(index, 1);
@@ -674,6 +984,21 @@ function clearReferences() {
 function updateClearReferencesButton() {
   const button = $("clearReferencesBtn");
   button.disabled = !state.references.length || !state.canClearReferences;
+}
+
+function jumpToPromptOptimizer() {
+  syncPromptDraft();
+  const activePrompt = state.promptDrafts[state.promptFormat] || "";
+  sessionStorage.setItem("pendingPromptTask", JSON.stringify({
+    description: activePrompt.trim(),
+    mode: state.references.length ? "reference" : "text",
+    images: state.references.map((item, index) => ({
+      name: item.name || `参考图 ${index + 1}.png`,
+      data: item.data,
+    })),
+    createdAt: new Date().toISOString(),
+  }));
+  window.location.href = "/prompt.html";
 }
 
 $("referenceInput").addEventListener("change", () => handleReferenceFiles($("referenceInput").files));
@@ -710,9 +1035,17 @@ $("refreshUserRecordsBtn").addEventListener("click", loadUserRecords);
 $("closePreviewBtn").addEventListener("click", () => $("previewDialog").close());
 $("downloadAllBtn").addEventListener("click", downloadAllImages);
 $("generateBtn").addEventListener("click", generateImage);
+$("jumpToPromptBtn").addEventListener("click", jumpToPromptOptimizer);
 $("modelSelect").addEventListener("change", updateModelHint);
+$("generationModeBtn").addEventListener("click", () => setRequestMode("generation"));
+$("editModeBtn").addEventListener("click", () => setRequestMode("edit"));
+$("plainPromptBtn").addEventListener("click", () => setPromptFormat("plain"));
+$("jsonPromptBtn").addEventListener("click", () => setPromptFormat("json"));
+$("promptInput").addEventListener("input", syncPromptDraft);
 
 $("visitorName").value = state.visitor;
 showIdentityIfNeeded();
+renderPromptInput();
+importPendingImageTask().catch((error) => setStatus("statusText", error.message, true));
 loadModels().catch((error) => setStatus("statusText", error.message, true));
 loadUserRecords();

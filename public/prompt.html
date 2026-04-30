@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Prompt 优化器</title>
+    <link rel="stylesheet" href="/prompt.css?v=handoff" />
+  </head>
+  <body>
+    <div class="identity-modal" id="identityModal">
+      <form class="modal-panel" id="identityForm">
+        <div class="modal-mark">AI</div>
+        <h1>请输入访问者身份</h1>
+        <p>名称会记录到每次 Prompt 优化任务中，方便多人同时使用时追踪来源。</p>
+        <input id="visitorName" autocomplete="name" placeholder="例如：张三 / 设计组 A" required />
+        <button type="submit">进入优化器</button>
+      </form>
+    </div>
+
+    <header class="prompt-topbar">
+      <div>
+        <strong>Prompt 优化器</strong>
+        <span id="visitorBadge">未登记使用者</span>
+      </div>
+      <nav>
+        <a href="/">功能大厅</a>
+        <a href="/image.html">生图工作台</a>
+        <button id="promptSettingsBtn" class="icon-button" type="button" title="管理员设置" aria-label="管理员设置">⚙</button>
+      </nav>
+    </header>
+
+    <main class="prompt-shell">
+      <section class="prompt-hero">
+        <p class="eyebrow">IMAGE PROMPT ORCHESTRATOR</p>
+        <h1>让模型读图并优化 Prompt</h1>
+        <p>选择 LLM 模型，上传图片或输入文本，模型会按 SKILL.md 规则输出更规范的改图 / 参考图生图 / 文生图 Prompt。</p>
+      </section>
+
+      <section class="prompt-workspace">
+        <section class="panel input-panel">
+          <div class="panel-head">
+            <h2>输入</h2>
+            <p>右上角管理员设置可配置 LLM API；主界面选择模型后直接调用。</p>
+          </div>
+
+          <label class="field">
+            <span>LLM 模型</span>
+            <select id="llmModelSelect"></select>
+          </label>
+
+          <label class="field">
+            <span>任务模式</span>
+            <div class="mode-grid" id="modeGrid">
+              <label class="mode-card is-active">
+                <input type="radio" name="mode" value="edit" checked />
+                <strong>改图</strong>
+                <small>保留原图主体与构图，只修改你指定的部分。</small>
+                <span class="mode-output"><strong>输出内容：</strong>1 份 JSON 结构化改图提示词</span>
+              </label>
+              <label class="mode-card">
+                <input type="radio" name="mode" value="reference" />
+                <strong>参考图生图</strong>
+                <small>只参考风格、材质、构图和氛围，重新生成新图。</small>
+                <span class="mode-output"><strong>输出内容：</strong>1 份自然语言 Prompt + 1 份 JSON 结构化 Prompt</span>
+              </label>
+              <label class="mode-card">
+                <input type="radio" name="mode" value="text" />
+                <strong>纯文生图</strong>
+                <small>不上传图片，仅根据文本扩写生成自然语言 Prompt。</small>
+                <span class="mode-output"><strong>输出内容：</strong>1 份自然语言 Prompt</span>
+              </label>
+            </div>
+          </label>
+
+          <div class="two-up">
+            <label class="field">
+              <span>画面比例</span>
+              <select id="aspectRatio">
+                <option value="1:1">1:1 正方形</option>
+                <option value="16:9" selected>16:9 横向</option>
+                <option value="4:3">4:3 横向</option>
+                <option value="9:16">竖向 16:9</option>
+                <option value="3:4">竖向 4:3</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>风格定位</span>
+              <input id="styleTone" type="text" placeholder="例如：手游图标、电影感海报、暗黑机械、梦幻果冻" />
+            </label>
+          </div>
+
+          <div class="upload-block">
+            <div class="upload-head">
+              <span>图片输入</span>
+              <button id="clearImageBtn" type="button" class="compact" disabled>清空图片</button>
+            </div>
+            <label class="upload-zone" id="uploadZone">
+              <input id="imageInput" type="file" accept="image/*" multiple />
+              <strong>选择或拖入参考图</strong>
+              <em id="uploadHint">支持多选和拖入追加，图片会按“参考图 1 / 2 / 3”编号。</em>
+            </label>
+            <div class="reference-thumbs" id="imageThumbs"></div>
+          </div>
+
+          <label class="field">
+            <span>需求描述</span>
+            <textarea id="description" rows="6" placeholder="写清楚要改什么、生成什么、主体、风格、构图、材质、光影和特效。"></textarea>
+          </label>
+
+          <div class="two-up">
+            <label class="field">
+              <span>重点保留 / 重点参考</span>
+              <textarea id="preserve" rows="5" placeholder="每行一条，例如：&#10;主体轮廓不变&#10;保留原始构图&#10;参考图的金属质感"></textarea>
+            </label>
+            <label class="field">
+              <span>负向约束</span>
+              <textarea id="negative" rows="5" placeholder="每行一条，例如：&#10;不要文字&#10;不要复杂背景&#10;不要多个主体"></textarea>
+            </label>
+          </div>
+
+          <div class="actions">
+            <button id="generatePromptBtn" type="button" class="primary">调用模型优化 Prompt</button>
+            <button id="resetBtn" type="button" class="ghost">清空</button>
+          </div>
+        </section>
+
+        <section class="panel output-panel">
+          <div class="panel-head">
+            <h2>输出</h2>
+            <p id="resultSummary">这里只输出自然语言 Prompt，可直接复制使用。</p>
+          </div>
+          <div class="output-box">
+            <textarea id="promptOutput" readonly>prompt在这里生成</textarea>
+          </div>
+          <div class="output-actions">
+            <button id="copyPromptBtn" type="button" class="primary copy-prompt-btn">复制</button>
+            <button id="toggleOutputBtn" type="button" class="json-action-btn" disabled>切换输出</button>
+          </div>
+          <button id="jumpToImageBtn" type="button" class="primary jump-to-image hidden">跳转到生图</button>
+        </section>
+
+        <section class="panel prompt-side-records">
+          <div class="card-head">
+            <h2>本机记录</h2>
+            <button id="refreshLocalPromptRecordsBtn" class="compact" type="button">刷新</button>
+          </div>
+          <div id="localPromptRecordsList" class="records-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <dialog id="promptAdminDialog" class="prompt-dialog">
+      <div class="dialog-head">
+        <h2>Prompt 优化器设置</h2>
+        <button id="closePromptAdminBtn" class="icon-button" type="button" aria-label="关闭">×</button>
+      </div>
+
+      <form id="promptLoginForm" class="admin-card">
+        <h3>管理员登录</h3>
+        <div class="admin-grid">
+          <label>账号<input id="promptAdminUser" value="admin" autocomplete="username" /></label>
+          <label>密码<input id="promptAdminPass" type="password" autocomplete="current-password" /></label>
+        </div>
+        <button type="submit" class="primary compact">登录</button>
+        <p id="promptLoginStatus" class="status"></p>
+      </form>
+
+      <div id="promptAdminPanel" class="admin-panel hidden">
+        <section class="admin-card">
+          <div class="card-head">
+            <h3>LLM API / 模型管理</h3>
+            <button id="newLlmApiBtn" class="compact" type="button">新增模型</button>
+          </div>
+          <div id="llmApiList" class="api-list"></div>
+        </section>
+
+        <form id="llmApiForm" class="admin-card hidden">
+          <h3 id="llmApiFormTitle">新增模型</h3>
+          <input id="llmApiId" type="hidden" />
+          <div class="admin-grid">
+            <label>显示名称<input id="llmApiName" placeholder="例如：GPT-4o / Gemini Vision" /></label>
+            <label>模型 ID<input id="llmApiModel" placeholder="例如：gpt-4o / gpt-4.1" /></label>
+            <label>API 地址<input id="llmApiEndpoint" placeholder="例如：https://api.openai.com/v1" /></label>
+            <label>API Key<input id="llmApiKey" type="password" placeholder="保存后会隐藏" /></label>
+            <label>温度<input id="llmApiTemperature" type="number" min="0" max="2" step="0.1" value="0.4" /></label>
+            <label class="check-row"><input id="llmApiEnabled" type="checkbox" checked /> 启用</label>
+          </div>
+          <button type="submit" class="primary compact">保存模型</button>
+          <p id="llmApiStatus" class="status"></p>
+        </form>
+
+        <section class="admin-card">
+          <div class="card-head">
+            <h3>Prompt 优化记录</h3>
+            <button id="refreshPromptRecordsBtn" class="compact" type="button">刷新记录</button>
+          </div>
+          <div id="promptRecordsList" class="records-list"></div>
+        </section>
+      </div>
+    </dialog>
+
+    <dialog id="promptRecordDialog" class="prompt-dialog record-detail-dialog">
+      <div class="dialog-head">
+        <h2 id="promptRecordDialogTitle">记录详情</h2>
+        <button id="closePromptRecordBtn" class="icon-button" type="button" aria-label="关闭">×</button>
+      </div>
+      <div id="promptRecordDetail" class="record-detail"></div>
+    </dialog>
+
+    <script src="/prompt.js?v=handoff"></script>
+  </body>
+</html>

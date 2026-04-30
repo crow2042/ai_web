@@ -5,12 +5,19 @@ node_modules/
 data/config.json
 data/records.jsonl
 data/generations.jsonl
+data/prompt-records.jsonl
 data/generated/
 
 # Local deploy artifacts
 ai-image-site-deploy/
 ai-image-site-deploy.zip
+ai-image-site-update.zip
 download-test.png
+$dst/
+playground_unpack/
+server_restore_tmp/
+preview-3006.ps1
+git
 
 # Logs / temp
 *.log

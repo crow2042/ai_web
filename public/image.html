@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI 生图工作台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="identity-modal" id="identityModal">
+      <form class="modal-panel" id="identityForm">
+        <div class="modal-mark">AI</div>
+        <h1>请输入访问者身份</h1>
+        <p>名称会记录到每次图片生成任务中，方便多人同时使用时追踪来源。</p>
+        <input id="visitorName" autocomplete="name" placeholder="例如：张三 / 设计组 A" required />
+        <button type="submit">进入生图界面</button>
+      </form>
+    </div>
+
+    <header class="topbar">
+      <div>
+        <strong>AI 生图工作台</strong>
+        <span id="visitorBadge">未登记访问者</span>
+      </div>
+      <div class="topbar-actions">
+        <a class="nav-link" href="/">功能大厅</a>
+        <a class="nav-link" href="/prompt.html">Prompt 优化器</a>
+        <button class="icon-button" id="settingsBtn" title="管理员配置" aria-label="管理员配置">⚙</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="generator">
+        <div class="section-title">
+          <h2>生成图片</h2>
+          <span>支持多人并发提交，后台自动记录生成者与结果。</span>
+        </div>
+
+        <div class="mode-stack">
+          <div class="switch-block">
+            <div class="switch-row">
+              <span class="switch-label">生图模式</span>
+              <div class="segmented-switch slider-switch mode-switch" id="requestModeSwitch">
+                <span class="switch-track" aria-hidden="true"></span>
+                <span class="switch-thumb" aria-hidden="true"></span>
+                <span class="switch-shadow" aria-hidden="true"></span>
+                <button id="generationModeBtn" class="switch-btn is-active" type="button" data-mode="generation">generation 生图</button>
+                <button id="editModeBtn" class="switch-btn" type="button" data-mode="edit">edit 改图</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="reference-field">
+          <div class="reference-head">
+            <span>参考图</span>
+            <button id="clearReferencesBtn" class="compact" type="button" disabled>清空参考图</button>
+          </div>
+          <label class="upload-zone" id="uploadZone">
+            <input id="referenceInput" type="file" accept="image/*" multiple />
+            <strong>选择或拖入参考图</strong>
+            <em>支持多选，缩略图会按“参考图 1 / 2 / 3”编号。</em>
+          </label>
+          <div class="reference-thumbs" id="referenceThumbs"></div>
+          <span class="field-note" id="referenceNote">可选，可在 prompt 中描述“参考图 1”的主体或“参考图 2”的风格。</span>
+        </div>
+
+        <div class="prompt-field">
+          <div class="prompt-head">
+            <span>Prompt 输入</span>
+            <div class="segmented-switch slider-switch compact-switch" id="promptFormatSwitch">
+              <span class="switch-track" aria-hidden="true"></span>
+              <span class="switch-thumb" aria-hidden="true"></span>
+              <span class="switch-shadow" aria-hidden="true"></span>
+              <button id="plainPromptBtn" class="switch-btn is-active" type="button" data-format="plain">Prompt</button>
+              <button id="jsonPromptBtn" class="switch-btn" type="button" data-format="json">JSON</button>
+            </div>
+          </div>
+          <textarea id="promptInput" rows="7" placeholder="描述你想生成的画面、风格、光线、构图等"></textarea>
+        </div>
+        <button id="jumpToPromptBtn" class="prompt-helper-btn" type="button">不知道怎么描述prompt？点击跳转进行优化</button>
+
+        <div class="model-row">
+          <label>
+            生图模型
+            <select id="modelSelect"></select>
+          </label>
+        </div>
+
+        <div class="control-grid">
+          <label>
+            图片比例
+            <select id="aspectSelect">
+              <option value="1:1 正方形构图">1:1</option>
+              <option value="16:9 横向宽银幕构图" selected>横向 16:9</option>
+              <option value="4:3 横向经典构图">横向 4:3</option>
+              <option value="9:16 竖向手机海报构图">竖向 16:9</option>
+              <option value="3:4 竖向经典构图">竖向 4:3</option>
+            </select>
+          </label>
+          <label>
+            图片张数
+            <select id="countSelect">
+              <option>1</option>
+              <option>2</option>
+              <option>3</option>
+              <option>4</option>
+              <option>5</option>
+              <option>6</option>
+              <option>7</option>
+              <option>8</option>
+              <option>9</option>
+            </select>
+          </label>
+          <div class="inline-action">
+            <button id="generateBtn" class="primary" type="button">生成图片</button>
+          </div>
+        </div>
+
+        <p class="status" id="statusText"></p>
+      </section>
+
+      <section class="output">
+        <div class="section-title">
+          <h2>图片输出</h2>
+          <span id="modelHint">等待选择模型</span>
+        </div>
+        <div class="output-actions">
+          <button id="downloadAllBtn" class="compact" type="button" disabled>全部下载</button>
+        </div>
+        <div class="image-box" id="imageBox">
+          <div class="placeholder">生成结果会显示在这里</div>
+        </div>
+      </section>
+
+      <section class="side-records">
+        <div class="section-title">
+          <h2>本机记录</h2>
+          <div class="side-record-actions">
+            <button id="refreshUserRecordsBtn" class="compact" type="button">刷新</button>
+          </div>
+        </div>
+        <div id="userRecordsList" class="records-list user-records-list"></div>
+      </section>
+    </main>
+
+    <dialog id="adminDialog" class="admin-dialog">
+      <div class="dialog-head">
+        <h2>管理员配置</h2>
+        <button class="icon-button" id="closeAdminBtn" aria-label="关闭">×</button>
+      </div>
+
+      <form id="loginForm" class="admin-card">
+        <h3>管理员登录</h3>
+        <div class="admin-grid">
+          <label>账号<input id="adminUser" value="admin" autocomplete="username" /></label>
+          <label>密码<input id="adminPass" type="password" autocomplete="current-password" /></label>
+        </div>
+        <button type="submit" class="primary compact">登录</button>
+        <p class="status" id="loginStatus"></p>
+      </form>
+
+      <div id="adminPanel" class="admin-panel hidden">
+        <div class="admin-card">
+          <div class="card-head">
+            <h3>API / 模型管理</h3>
+            <button id="newApiBtn" class="compact" type="button">新增模型</button>
+          </div>
+          <div id="apiList" class="api-list"></div>
+        </div>
+
+        <form id="apiForm" class="admin-card hidden">
+          <h3 id="apiFormTitle">新增模型</h3>
+          <input id="apiId" type="hidden" />
+          <div class="admin-grid">
+            <label>显示名称<input id="apiName" placeholder="例如：Doubao Seedream 5.0" /></label>
+            <label>模型 ID<input id="apiModel" placeholder="例如：gpt-image-1" /></label>
+            <label>API 地址<input id="apiEndpoint" placeholder="图片生成接口地址" /></label>
+            <label>API Key<input id="apiKey" type="password" placeholder="保存后会隐藏" /></label>
+            <label>尺寸<input id="apiSize" placeholder="1024x1024" /></label>
+            <label class="mode-multi-field">用于模式
+              <div class="mode-multi-box">
+                <label class="mode-check"><input id="apiModeGeneration" type="checkbox" checked /> generation 生图</label>
+                <label class="mode-check"><input id="apiModeEdit" type="checkbox" /> edit 改图</label>
+              </div>
+            </label>
+          </div>
+          <button type="submit" class="primary compact">保存模型</button>
+          <p class="status" id="apiStatus"></p>
+        </form>
+
+        <div class="admin-card">
+          <div class="card-head">
+            <h3>生成记录</h3>
+            <div class="record-actions">
+              <button id="refreshRecordsBtn" class="compact" type="button">刷新记录</button>
+            </div>
+          </div>
+          <div id="recordFilters" class="record-filters">
+            <label>使用者<select id="filterUser"></select></label>
+            <label>开始时间<input id="filterStart" type="datetime-local" /></label>
+            <label>结束时间<input id="filterEnd" type="datetime-local" /></label>
+            <button id="applyFiltersBtn" class="primary compact" type="button">应用筛选</button>
+            <button id="resetFiltersBtn" class="compact" type="button">重置</button>
+          </div>
+          <div id="recordsList" class="records-list"></div>
+        </div>
+
+        <form id="passwordForm" class="admin-card">
+          <h3>修改管理员账号密码</h3>
+          <div class="admin-grid">
+            <label>当前账号<input id="currentUser" autocomplete="username" /></label>
+            <label>当前密码<input id="currentPass" type="password" autocomplete="current-password" /></label>
+            <label>新账号<input id="nextUser" autocomplete="username" /></label>
+            <label>新密码<input id="nextPass" type="password" autocomplete="new-password" /></label>
+          </div>
+          <button type="submit" class="compact">修改账号密码</button>
+          <p class="status" id="passwordStatus"></p>
+        </form>
+      </div>
+    </dialog>
+
+    <dialog id="previewDialog" class="preview-dialog">
+      <div class="dialog-head">
+        <h2>预览</h2>
+        <button class="icon-button" id="closePreviewBtn" aria-label="关闭">×</button>
+      </div>
+      <div id="previewGrid" class="preview-grid"></div>
+    </dialog>
+
+    <script src="/app.js?v=handoff"></script>
+  </body>
+</html>

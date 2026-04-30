@@ -11,6 +11,7 @@ const GENERATED_DIR = path.join(DATA_DIR, "generated");
 const CONFIG_FILE = path.join(DATA_DIR, "config.json");
 const LOG_FILE = path.join(DATA_DIR, "generations.jsonl");
 const RECORD_FILE = path.join(DATA_DIR, "records.jsonl");
+const PROMPT_RECORD_FILE = path.join(DATA_DIR, "prompt-records.jsonl");
 
 const sessions = new Map();
 let writeChain = Promise.resolve();
@@ -50,6 +51,7 @@ function compactRecord(entry) {
   return {
     time: entry.time,
     visitor: entry.visitor,
+    requestMode: entry.requestMode,
     clientId: entry.clientId,
     model: entry.model,
     modelId: entry.modelId,
@@ -134,10 +136,38 @@ function requireAdmin(req, res) {
   return false;
 }
 
+function apiRequestMode(endpoint) {
+  const text = String(endpoint || "").toLowerCase();
+  return /\/images?\/edits?\/?$/.test(text) ? "edit" : "generation";
+}
+
 function publicApis(config) {
   return (config.apis || [])
     .filter((api) => api.enabled !== false)
-    .map((api) => ({ id: api.id, name: api.name, model: api.model, size: api.size || "1024x1024" }));
+    .map((api) => ({
+      id: api.id,
+      name: api.name,
+      model: api.model,
+      size: api.size || "1024x1024",
+      requestMode: apiRequestMode(api.endpoint)
+    }));
+}
+
+function ensureLlmApis(config) {
+  if (!Array.isArray(config.llmApis)) config.llmApis = [];
+  return config.llmApis;
+}
+
+function publicLlmApis(config) {
+  return ensureLlmApis(config)
+    .filter((api) => api.enabled !== false)
+    .map((api) => ({
+      id: api.id,
+      name: api.name,
+      model: api.model,
+      endpoint: api.endpoint,
+      temperature: Number(api.temperature ?? 0.4)
+    }));
 }
 
 function sanitizeApi(api) {
@@ -160,10 +190,48 @@ function validateApi(api) {
   return "";
 }
 
+function sanitizeLlmApi(api) {
+  return {
+    id: api.id || crypto.randomUUID(),
+    name: String(api.name || "").trim(),
+    model: String(api.model || "").trim(),
+    endpoint: String(api.endpoint || "").trim(),
+    apiKey: String(api.apiKey || "").trim(),
+    temperature: Number(api.temperature ?? 0.4),
+    enabled: api.enabled !== false
+  };
+}
+
+function validateLlmApi(api) {
+  if (!api.name) return "LLM 显示名称不能为空";
+  if (!api.model) return "LLM 模型 ID 不能为空";
+  if (!api.endpoint) return "LLM API 地址不能为空";
+  if (!api.apiKey) return "LLM API Key 不能为空";
+  return "";
+}
+
 function valueList(value) {
   if (!value) return [];
   if (Array.isArray(value)) return value.filter(Boolean).map(String);
   return [String(value)];
+}
+
+function cleanHeaderValue(value, fieldName) {
+  const text = String(value || "").normalize("NFKC").replace(/^Bearer\s+/i, "").trim();
+  for (const char of text) {
+    if (char.charCodeAt(0) > 255) {
+      throw new Error(`${fieldName} 包含不能用于 HTTP 请求头的字符：${char}。请检查是否复制了中文括号、中文说明或多余空格。`);
+    }
+  }
+  return text;
+}
+
+function authHeaders(api, extra = {}) {
+  const apiKey = cleanHeaderValue(api.apiKey, "API Key");
+  return {
+    ...extra,
+    Authorization: `Bearer ${apiKey}`
+  };
 }
 
 function isGptImageModel(model) {
@@ -217,7 +285,7 @@ async function callGptImageEdit(api, prompt, refs, size) {
   const endpoint = imageEndpointFor(api.endpoint, "edits");
   const response = await fetch(endpoint, {
     method: "POST",
-    headers: { Authorization: `Bearer ${api.apiKey}` },
+    headers: authHeaders(api),
     body: form
   });
   const text = await response.text();
@@ -242,7 +310,7 @@ async function uploadReferenceImage(api, dataUrl, index) {
   form.append("purpose", "generation");
   const response = await fetch(uploadEndpointFor(api.endpoint), {
     method: "POST",
-    headers: { Authorization: `Bearer ${api.apiKey}` },
+    headers: authHeaders(api),
     body: form
   });
   const text = await response.text();
@@ -330,7 +398,7 @@ async function pollGenerationTaskAt(api, payload, endpoint) {
   const statusUrl = `${String(endpoint).replace(/\/$/, "")}/${encodeURIComponent(taskId)}`;
   for (let i = 0; i < 60; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
-    const response = await fetch(statusUrl, { headers: { Authorization: `Bearer ${api.apiKey}` } });
+    const response = await fetch(statusUrl, { headers: authHeaders(api) });
     const text = await response.text();
     let result;
     try {
@@ -401,10 +469,7 @@ async function callImageApi(api, prompt, references, count) {
     const endpoint = gptImage ? imageEndpointFor(api.endpoint, "generations") : api.endpoint;
     const response = await fetch(endpoint, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        Authorization: `Bearer ${api.apiKey}`
-      },
+      headers: authHeaders(api, { "Content-Type": "application/json; charset=utf-8" }),
       body: JSON.stringify(body)
     });
     const text = await response.text();
@@ -425,6 +490,117 @@ async function callImageApi(api, prompt, references, count) {
   return outputs;
 }
 
+function chatEndpointFor(endpoint) {
+  const text = String(endpoint || "").trim();
+  if (!text) return "";
+  if (/\/responses\/?$/i.test(text)) return text;
+  if (/\/chat\/completions\/?$/i.test(text)) return text;
+  if (/\/v1\/?$/i.test(text)) return `${text.replace(/\/$/, "")}/chat/completions`;
+  return `${text.replace(/\/$/, "")}/chat/completions`;
+}
+
+function promptSystemText(mode) {
+  if (mode === "edit") {
+    return `你是图像任务 Prompt 编排器。你不会生成图片，只输出结构化 prompt 文本。当前模式是 edit。必须只输出 1 张卡片，内容为自然语言 Prompt，用于直接改图。输出必须是严格 JSON：{"cards":[{"title":"","subtitle":"","content":""}]}。不要输出 markdown 代码块，不要输出额外解释。卡片 content 只能是自然语言 Prompt，不要输出 JSON，不要输出字段名。Prompt 要清楚表达基于上传原图进行局部修改、保留什么、修改什么、未提及区域不变、光影材质边缘自然融合、负向约束。`;
+  }
+  if (mode === "reference") {
+    return `你是图像任务 Prompt 编排器。你不会生成图片，只输出结构化 prompt 文本。当前模式是 reference。必须只输出 1 张卡片，内容为自然语言 Prompt，用于参考图生图。输出必须是严格 JSON：{"cards":[{"title":"","subtitle":"","content":""}]}。不要输出 markdown 代码块，不要输出额外解释。卡片 content 只能是自然语言 Prompt，不要输出 JSON，不要输出字段名。Prompt 要清楚表达参考图如何使用、主体、风格、构图、材质、特效和负向约束。`;
+  }
+  return `你是图像任务 Prompt 编排器。你不会生成图片，只输出结构化 prompt 文本。当前模式是 text。必须只输出 1 张卡片，内容为自然语言 Prompt，用于纯文生图。输出必须是严格 JSON：{"cards":[{"title":"","subtitle":"","content":""}]}。不要输出 markdown 代码块，不要输出额外解释。卡片 content 只能是自然语言 Prompt，不要输出 JSON，不要输出字段名。`;
+}
+
+function assistantContentText(payload) {
+  if (payload?.output_text) return String(payload.output_text);
+  if (Array.isArray(payload?.output)) {
+    const parts = [];
+    for (const output of payload.output) {
+      for (const item of output.content || []) {
+        if (item.text) parts.push(String(item.text));
+        else if (item.content) parts.push(String(item.content));
+      }
+    }
+    if (parts.length) return parts.join("\n").trim();
+  }
+  const content = payload?.choices?.[0]?.message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map((part) => part.text || part.content || "").filter(Boolean).join("\n").trim();
+  return "";
+}
+
+function parsePromptCards(text) {
+  let raw = String(text || "").trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "");
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start >= 0 && end > start) raw = raw.slice(start, end + 1);
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    return [{ title: "模型返回 Prompt", subtitle: "模型未返回标准 JSON，已保留原始文本", content: String(text || "").trim() }];
+  }
+  return (payload.cards || [])
+    .filter((card) => card.title && card.content)
+    .map((card) => ({ title: String(card.title), subtitle: String(card.subtitle || ""), content: String(card.content) }));
+}
+
+async function callPromptLlm(api, body) {
+  const endpoint = chatEndpointFor(api.endpoint);
+  if (!endpoint) throw new Error("LLM API 地址不能为空");
+  const isResponsesApi = /\/responses\/?$/i.test(endpoint);
+  const content = [{
+    type: "text",
+    text: [
+      `mode: ${body.mode || "text"}`,
+      `aspectRatio: ${body.aspectRatio || "16:9"}`,
+      `styleTone: ${body.styleTone || ""}`,
+      `description: ${body.description || ""}`,
+      `preserve: ${valueList(body.preserve).join(" | ") || "无"}`,
+      `negative: ${valueList(body.negative).join(" | ") || "无"}`,
+      `imageCount: ${valueList(body.imageDataUrls).length || (body.imageDataUrl ? 1 : 0)}`
+    ].join("\n")
+  }];
+  const imageUrls = valueList(body.imageDataUrls).length ? valueList(body.imageDataUrls) : valueList(body.imageDataUrl);
+  imageUrls.forEach((imageUrl) => {
+    content.push({ type: "image_url", image_url: { url: String(imageUrl) } });
+  });
+  let requestBody;
+  if (isResponsesApi) {
+    const responseContent = [{
+      type: "input_text",
+      text: `${promptSystemText(body.mode)}\n\n用户输入：\n${content[0].text}`
+    }];
+    imageUrls.forEach((imageUrl) => {
+      responseContent.push({ type: "input_image", image_url: String(imageUrl) });
+    });
+    requestBody = {
+      model: api.model,
+      input: [{ role: "user", content: responseContent }]
+    };
+  } else {
+    requestBody = {
+      model: api.model,
+      temperature: Number(api.temperature ?? 0.4),
+      messages: [
+        { role: "system", content: promptSystemText(body.mode) },
+        { role: "user", content }
+      ],
+      response_format: { type: "json_object" }
+    };
+  }
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: authHeaders(api, { "Content-Type": "application/json; charset=utf-8" }),
+    body: JSON.stringify(requestBody)
+  });
+  const text = await response.text();
+  let payload;
+  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+  if (!response.ok) throw new Error(payload.error?.message || payload.message || text || `HTTP ${response.status}`);
+  const cards = parsePromptCards(assistantContentText(payload));
+  if (!cards.length) throw new Error("LLM 已返回结果，但未能解析出有效 Prompt 卡片");
+  return cards;
+}
+
 function readRecords() {
   if (!fs.existsSync(RECORD_FILE)) return [];
   const lines = stripBom(fs.readFileSync(RECORD_FILE, "utf8")).trim().split(/\r?\n/).filter(Boolean).slice(-100);
@@ -440,6 +616,29 @@ function readRecords() {
 
 function readClientRecords(clientId) {
   return readRecords().filter((record) => record.clientId && record.clientId === clientId);
+}
+
+function appendPromptRecord(entry) {
+  const line = `${JSON.stringify(entry)}\n`;
+  writeChain = writeChain.then(() => fs.promises.appendFile(PROMPT_RECORD_FILE, line));
+  return writeChain;
+}
+
+function readPromptRecords() {
+  if (!fs.existsSync(PROMPT_RECORD_FILE)) return [];
+  const lines = stripBom(fs.readFileSync(PROMPT_RECORD_FILE, "utf8")).trim().split(/\r?\n/).filter(Boolean).slice(-200);
+  return lines.map((line) => {
+    if (line.length > 300000) return null;
+    try {
+      return JSON.parse(line);
+    } catch {
+      return null;
+    }
+  }).filter(Boolean);
+}
+
+function readClientPromptRecords(clientId) {
+  return readPromptRecords().filter((record) => record.clientId && record.clientId === clientId);
 }
 
 function stripBom(text) {
@@ -520,6 +719,10 @@ async function route(req, res) {
       return sendJson(res, 200, { models: publicApis(readConfig()) });
     }
 
+    if (req.method === "GET" && url.pathname === "/api/llm-models") {
+      return sendJson(res, 200, { models: publicLlmApis(readConfig()) });
+    }
+
     if (req.method === "GET" && url.pathname === "/api/download") {
       return downloadImage(url.searchParams.get("url"), url.searchParams.get("name"), res);
     }
@@ -550,6 +753,7 @@ async function route(req, res) {
         await appendLog({
           time: startedAt,
           visitor,
+          requestMode: apiRequestMode(api.endpoint),
           clientId,
           model: api.name,
           modelId: api.id,
@@ -566,6 +770,7 @@ async function route(req, res) {
         await appendLog({
           time: startedAt,
           visitor,
+          requestMode: apiRequestMode(api.endpoint),
           clientId,
           model: api.name,
           modelId: api.id,
@@ -575,6 +780,70 @@ async function route(req, res) {
           referencePreviews: refPreviews,
           count,
           outputs: [],
+          status: "failed",
+          error: error.message
+        });
+        return sendJson(res, 502, { error: error.message });
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/prompt-orchestrator/generate") {
+      const body = await getBody(req);
+      const visitor = String(body.visitor || "").trim();
+      const clientId = String(body.clientId || "").trim();
+      const mode = String(body.mode || "text").trim();
+      const modelId = String(body.modelId || "").trim();
+      const description = String(body.description || "").trim();
+      const styleTone = String(body.styleTone || "").trim();
+      const aspectRatio = String(body.aspectRatio || "16:9").trim();
+      const preserve = valueList(body.preserve);
+      const negative = valueList(body.negative);
+      const imageDataUrls = valueList(body.imageDataUrls);
+      if (!imageDataUrls.length && body.imageDataUrl) imageDataUrls.push(String(body.imageDataUrl).trim());
+      const imageDataUrl = imageDataUrls[0] || "";
+      if (!visitor) return sendJson(res, 400, { error: "请先填写使用者名称" });
+      if (!description) return sendJson(res, 400, { error: "请先填写需求描述" });
+      if (!modelId) return sendJson(res, 400, { error: "请选择一个可用的 LLM 模型" });
+      const config = readConfig();
+      const api = ensureLlmApis(config).find((item) => item.id === modelId && item.enabled !== false);
+      if (!api) return sendJson(res, 400, { error: "所选 LLM 模型不存在或已停用" });
+      const startedAt = new Date().toISOString();
+      try {
+        const cards = await callPromptLlm(api, { mode, description, preserve, negative, styleTone, aspectRatio, imageDataUrls, imageDataUrl });
+        await appendPromptRecord({
+          time: startedAt,
+          visitor,
+          clientId,
+          mode,
+          model: api.name,
+          modelId: api.id,
+          description,
+          styleTone,
+          aspectRatio,
+          preserve,
+          negative,
+          inputImagePreview: imageDataUrl.length <= 200000 ? imageDataUrl : "",
+          inputImagePreviews: imageDataUrls.filter((item) => String(item).length <= 200000),
+          cards,
+          status: "success"
+        });
+        return sendJson(res, 200, { cards });
+      } catch (error) {
+        await appendPromptRecord({
+          time: startedAt,
+          visitor,
+          clientId,
+          mode,
+          model: api.name,
+          modelId: api.id,
+          description,
+          styleTone,
+          aspectRatio,
+          preserve,
+          negative,
+          inputImagePreview: imageDataUrl.length <= 200000 ? imageDataUrl : "",
+          inputImagePreviews: imageDataUrls.filter((item) => String(item).length <= 200000),
+          cards: [],
           status: "failed",
           error: error.message
         });
@@ -604,15 +873,35 @@ async function route(req, res) {
       });
     }
 
+    if (req.method === "GET" && url.pathname === "/api/admin/llm-config") {
+      if (!requireAdmin(req, res)) return;
+      const config = readConfig();
+      return sendJson(res, 200, {
+        username: config.admin.username,
+        llmApis: ensureLlmApis(config).map((api) => ({ ...api, apiKey: api.apiKey ? "********" : "" }))
+      });
+    }
+
     if (req.method === "GET" && url.pathname === "/api/admin/records") {
       if (!requireAdmin(req, res)) return;
-      return sendJson(res, 200, { records: readRecords() });
+      return sendJson(res, 200, { records: readRecords().slice(-120) });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/admin/prompt-records") {
+      if (!requireAdmin(req, res)) return;
+      return sendJson(res, 200, { records: readPromptRecords().slice(-120) });
     }
 
     if (req.method === "GET" && url.pathname === "/api/records") {
       const clientId = String(url.searchParams.get("clientId") || "").trim();
       if (!clientId) return sendJson(res, 400, { error: "缺少本机记录标识" });
       return sendJson(res, 200, { records: readClientRecords(clientId) });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/prompt-records") {
+      const clientId = String(url.searchParams.get("clientId") || "").trim();
+      if (!clientId) return sendJson(res, 400, { error: "缺少本机记录标识" });
+      return sendJson(res, 200, { records: readClientPromptRecords(clientId) });
     }
 
     if (req.method === "POST" && url.pathname === "/api/admin/apis") {
@@ -632,11 +921,36 @@ async function route(req, res) {
       return sendJson(res, 200, { ok: true, api: { ...incoming, apiKey: "********" } });
     }
 
+    if (req.method === "POST" && url.pathname === "/api/admin/llm-apis") {
+      if (!requireAdmin(req, res)) return;
+      const body = await getBody(req);
+      const config = readConfig();
+      const incoming = sanitizeLlmApi(body);
+      const current = ensureLlmApis(config).find((api) => api.id === incoming.id);
+      if (incoming.apiKey === "********" && current) incoming.apiKey = current.apiKey;
+      const problem = validateLlmApi(incoming);
+      if (problem) return sendJson(res, 400, { error: problem });
+      const index = config.llmApis.findIndex((api) => api.id === incoming.id);
+      if (index >= 0) config.llmApis[index] = incoming;
+      else config.llmApis.push(incoming);
+      await saveConfig(config);
+      return sendJson(res, 200, { ok: true, api: { ...incoming, apiKey: "********" } });
+    }
+
     if (req.method === "DELETE" && url.pathname.startsWith("/api/admin/apis/")) {
       if (!requireAdmin(req, res)) return;
       const id = decodeURIComponent(url.pathname.split("/").pop());
       const config = readConfig();
       config.apis = (config.apis || []).filter((api) => api.id !== id);
+      await saveConfig(config);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    if (req.method === "DELETE" && url.pathname.startsWith("/api/admin/llm-apis/")) {
+      if (!requireAdmin(req, res)) return;
+      const id = decodeURIComponent(url.pathname.split("/").pop());
+      const config = readConfig();
+      config.llmApis = ensureLlmApis(config).filter((api) => api.id !== id);
       await saveConfig(config);
       return sendJson(res, 200, { ok: true });
     }
