@@ -12,6 +12,11 @@ const CONFIG_FILE = path.join(DATA_DIR, "config.json");
 const LOG_FILE = path.join(DATA_DIR, "generations.jsonl");
 const RECORD_FILE = path.join(DATA_DIR, "records.jsonl");
 const PROMPT_RECORD_FILE = path.join(DATA_DIR, "prompt-records.jsonl");
+const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const FEISHU_OAUTH_AUTHORIZE_URL = "https://open.feishu.cn/open-apis/authen/v1/authorize";
+const FEISHU_TENANT_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal";
+const FEISHU_USER_ACCESS_TOKEN_URL = "https://open.feishu.cn/open-apis/authen/v1/oidc/access_token";
+const FEISHU_USER_INFO_URL = "https://open.feishu.cn/open-apis/authen/v1/user_info";
 
 const sessions = new Map();
 let writeChain = Promise.resolve();
@@ -25,6 +30,13 @@ function ensureData() {
       CONFIG_FILE,
       JSON.stringify({
         admin: { username: "admin", salt, hash: hashPassword("1596357", salt) },
+        adminUsers: [],
+        feishuAuth: {
+          enabled: false,
+          appId: "",
+          appSecret: "",
+          redirectUri: `http://localhost:${PORT}/api/admin/feishu/callback`
+        },
         apis: []
       }, null, 2)
     );
@@ -35,14 +47,53 @@ function hashPassword(password, salt) {
   return crypto.pbkdf2Sync(password, salt, 120000, 32, "sha256").toString("hex");
 }
 
+function sanitizeFeishuAuth(input = {}) {
+  return {
+    enabled: input.enabled === true,
+    appId: String(input.appId || "").trim(),
+    appSecret: String(input.appSecret || "").trim(),
+    redirectUri: String(input.redirectUri || `http://localhost:${PORT}/api/admin/feishu/callback`).trim()
+  };
+}
+
+function sanitizeAdminUser(input = {}) {
+  return {
+    openId: String(input.openId || input.open_id || "").trim(),
+    userId: String(input.userId || input.user_id || "").trim(),
+    unionId: String(input.unionId || input.union_id || "").trim(),
+    name: String(input.name || input.en_name || input.display_name || "").trim(),
+    email: String(input.email || "").trim(),
+    avatarUrl: String(input.avatarUrl || input.avatar_url || input.avatar_big || "").trim(),
+    isSuperAdmin: input.isSuperAdmin !== false,
+    addedAt: input.addedAt || new Date().toISOString(),
+    addedBy: String(input.addedBy || "system").trim()
+  };
+}
+
+function normalizeConfig(config) {
+  if (!config || typeof config !== "object") config = {};
+  if (!config.admin || typeof config.admin !== "object") {
+    const salt = crypto.randomBytes(16).toString("hex");
+    config.admin = { username: "admin", salt, hash: hashPassword("1596357", salt) };
+  }
+  if (!Array.isArray(config.apis)) config.apis = [];
+  if (!Array.isArray(config.llmApis)) config.llmApis = [];
+  if (!Array.isArray(config.adminUsers)) config.adminUsers = [];
+  config.adminUsers = config.adminUsers
+    .map(sanitizeAdminUser)
+    .filter((user) => user.openId || user.userId || user.unionId);
+  config.feishuAuth = sanitizeFeishuAuth(config.feishuAuth || {});
+  return config;
+}
+
 function readConfig() {
   ensureData();
-  return JSON.parse(stripBom(fs.readFileSync(CONFIG_FILE, "utf8")));
+  return normalizeConfig(JSON.parse(stripBom(fs.readFileSync(CONFIG_FILE, "utf8"))));
 }
 
 function saveConfig(config) {
   writeChain = writeChain.then(() =>
-    fs.promises.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2))
+    fs.promises.writeFile(CONFIG_FILE, JSON.stringify(normalizeConfig(config), null, 2))
   );
   return writeChain;
 }
@@ -125,15 +176,126 @@ function parseCookies(req) {
   );
 }
 
-function isAuthed(req) {
+function createSession(payload) {
+  const token = crypto.randomBytes(32).toString("hex");
+  sessions.set(token, {
+    expiresAt: Date.now() + SESSION_MAX_AGE_MS,
+    ...payload
+  });
+  return token;
+}
+
+function createCookieHeader(token) {
+  return `admin_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(SESSION_MAX_AGE_MS / 1000)}`;
+}
+
+const OAUTH_STATE_MAX_AGE_MS = 10 * 60 * 1000;
+const pendingOAuthStates = new Map();
+
+function saveOAuthState(state, returnTo) {
+  const id = crypto.randomBytes(16).toString("hex");
+  pendingOAuthStates.set(id, { state, returnTo: returnTo || "/prompt.html", expiresAt: Date.now() + OAUTH_STATE_MAX_AGE_MS });
+  return id;
+}
+
+function consumeOAuthState(id) {
+  if (!id || !pendingOAuthStates.has(id)) return null;
+  const entry = pendingOAuthStates.get(id);
+  pendingOAuthStates.delete(id);
+  if (!entry || entry.expiresAt <= Date.now()) return null;
+  return entry;
+}
+
+function sanitizeFeishuError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  if (message.includes("timeout") || message.includes("timed out")) return "飞书服务响应超时，请稍后重试";
+  if (message.includes("econnrefused") || message.includes("enotfound")) return "无法连接飞书服务，请检查网络";
+  if (message.includes("invalid_grant") || message.includes("code")) return "飞书授权码已失效，请重新登录";
+  if (message.includes("配置不完整") || message.includes("appid")) return "飞书登录配置不完整";
+  if (message.includes("租户")) return "飞书租户令牌获取失败";
+  if (message.includes("用户")) return "飞书用户信息获取失败";
+  return "飞书登录失败，请稍后重试";
+}
+
+function getSession(req) {
   const token = parseCookies(req).admin_session;
-  return Boolean(token && sessions.has(token) && sessions.get(token) > Date.now());
+  if (!token || !sessions.has(token)) return null;
+  const session = sessions.get(token);
+  if (!session || session.expiresAt <= Date.now()) {
+    sessions.delete(token);
+    return null;
+  }
+  session.expiresAt = Date.now() + SESSION_MAX_AGE_MS;
+  return { token, ...session };
+}
+
+function clearSession(req) {
+  const token = parseCookies(req).admin_session;
+  if (token) sessions.delete(token);
+}
+
+function isAuthed(req) {
+  return Boolean(getSession(req));
+}
+
+function isAdminSession(session) {
+  return Boolean(session && session.adminUser && (session.adminUser.isAdmin || session.adminUser.isSuperAdmin));
+}
+
+function requireUserSession(req, res) {
+  const session = getSession(req);
+  if (session) return session;
+  sendJson(res, 401, { error: "请先完成飞书登录" });
+  return null;
 }
 
 function requireAdmin(req, res) {
-  if (isAuthed(req)) return true;
-  sendJson(res, 401, { error: "请先登录管理员账号" });
+  const session = getSession(req);
+  if (isAdminSession(session)) return true;
+  sendJson(res, session ? 403 : 401, { error: session ? "需要管理员权限" : "请先完成飞书登录" });
   return false;
+}
+
+function requireAdminSession(req, res) {
+  const session = getSession(req);
+  if (isAdminSession(session)) return session;
+  sendJson(res, session ? 403 : 401, { error: session ? "需要管理员权限" : "请先完成飞书登录" });
+  return null;
+}
+
+function requireSuperAdmin(req, res) {
+  const session = requireAdminSession(req, res);
+  if (!session) return null;
+  if (session.adminUser && session.adminUser.isSuperAdmin !== false) return session;
+  sendJson(res, 403, { error: "只有超级管理员可以执行此操作" });
+  return null;
+}
+
+function isLegacyAdminLoginEnabled(config) {
+  return !(config.feishuAuth && config.feishuAuth.enabled);
+}
+
+function publicFeishuAuth(config) {
+  const auth = sanitizeFeishuAuth(config.feishuAuth || {});
+  return {
+    enabled: auth.enabled,
+    appId: auth.appId,
+    appSecret: auth.appSecret ? "********" : "",
+    redirectUri: auth.redirectUri,
+    configured: Boolean(auth.appId && auth.appSecret && auth.redirectUri)
+  };
+}
+
+function matchAdminUser(adminUser, profile = {}) {
+  return Boolean(
+    (adminUser.openId && adminUser.openId === String(profile.open_id || profile.openId || "")) ||
+    (adminUser.userId && adminUser.userId === String(profile.user_id || profile.userId || "")) ||
+    (adminUser.unionId && adminUser.unionId === String(profile.union_id || profile.unionId || ""))
+  );
+}
+
+function findAdminUser(config, profile) {
+  return (config.adminUsers || []).find((item) => matchAdminUser(item, profile)) || null;
 }
 
 function apiRequestMode(endpoint) {
@@ -707,6 +869,56 @@ async function downloadImage(url, name, res) {
   res.end(buffer);
 }
 
+async function jsonRequest(url, options = {}) {
+  const response = await fetch(url, options);
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : {};
+  if (!response.ok) throw new Error(data.msg || data.message || data.error || `请求失败：${response.status}`);
+  return data;
+}
+
+async function getFeishuTenantAccessToken(auth) {
+  const data = await jsonRequest(FEISHU_TENANT_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+    body: JSON.stringify({ app_id: auth.appId, app_secret: auth.appSecret })
+  });
+  if (data.code && data.code !== 0) throw new Error(data.msg || "飞书租户令牌获取失败");
+  return data.tenant_access_token;
+}
+
+async function exchangeFeishuCode(auth, code) {
+  const tenantAccessToken = await getFeishuTenantAccessToken(auth);
+  const data = await jsonRequest(FEISHU_USER_ACCESS_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      Authorization: `Bearer ${tenantAccessToken}`
+    },
+    body: JSON.stringify({ grant_type: "authorization_code", code, redirect_uri: auth.redirectUri })
+  });
+  if (data.code && data.code !== 0) throw new Error(data.msg || "飞书授权码换取令牌失败");
+  return data.data || {};
+}
+
+async function getFeishuUserInfo(userAccessToken) {
+  const data = await jsonRequest(FEISHU_USER_INFO_URL, {
+    headers: { Authorization: `Bearer ${userAccessToken}` }
+  });
+  if (data.code && data.code !== 0) throw new Error(data.msg || "飞书用户信息获取失败");
+  return data.data || {};
+}
+
+function buildFeishuAuthorizeUrl(auth, state) {
+  const url = new URL(FEISHU_OAUTH_AUTHORIZE_URL);
+  url.searchParams.set("app_id", auth.appId);
+  url.searchParams.set("redirect_uri", auth.redirectUri);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", "contact:user.id:readonly contact:user.email:readonly");
+  url.searchParams.set("state", state);
+  return url.toString();
+}
+
 async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
@@ -724,10 +936,121 @@ async function route(req, res) {
     }
 
     if (req.method === "GET" && url.pathname === "/api/download") {
+      if (!requireUserSession(req, res)) return;
       return downloadImage(url.searchParams.get("url"), url.searchParams.get("name"), res);
     }
 
+    if (req.method === "GET" && url.pathname === "/api/admin/session") {
+      const session = getSession(req);
+      if (!session) return sendJson(res, 200, { authed: false });
+      return sendJson(res, 200, {
+        authed: true,
+        authType: session.authType || "legacy",
+        adminUser: session.adminUser || null
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/admin/logout") {
+      clearSession(req);
+      return sendJson(res, 200, { ok: true }, {
+        "Set-Cookie": "admin_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"
+      });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/admin/feishu/meta") {
+      const config = readConfig();
+      return sendJson(res, 200, { feishuAuth: publicFeishuAuth(config) });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/admin/feishu/login") {
+      const config = readConfig();
+      const auth = sanitizeFeishuAuth(config.feishuAuth);
+      if (!auth.enabled) return sendJson(res, 400, { error: "管理员飞书登录尚未启用。" });
+      if (!auth.appId || !auth.appSecret || !auth.redirectUri) {
+        return sendJson(res, 400, { error: "飞书登录配置不完整，请先在管理员配置中补全。" });
+      }
+      const state = crypto.randomBytes(16).toString("hex");
+      const returnTo = String(url.searchParams.get("returnTo") || "/prompt.html").trim();
+      const stateId = saveOAuthState(state, returnTo);
+      return sendJson(res, 200, { url: buildFeishuAuthorizeUrl(auth, state), stateId });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/admin/feishu/callback") {
+      const config = readConfig();
+      const auth = sanitizeFeishuAuth(config.feishuAuth);
+      const code = String(url.searchParams.get("code") || "").trim();
+      const errorText = String(url.searchParams.get("error") || "").trim();
+      const returnedState = String(url.searchParams.get("state") || "").trim();
+      const stateId = String(url.searchParams.get("state_id") || "").trim();
+      if (errorText) {
+        return send(res, 302, "", { Location: "/prompt.html?admin_login_error=" + encodeURIComponent(errorText) });
+      }
+      if (!auth.enabled || !auth.appId || !auth.appSecret || !auth.redirectUri) {
+        return send(res, 302, "", { Location: "/prompt.html?admin_login_error=" + encodeURIComponent("飞书登录配置不完整") });
+      }
+      if (!code) {
+        return send(res, 302, "", { Location: "/prompt.html?admin_login_error=" + encodeURIComponent("缺少飞书授权码") });
+      }
+      const stateEntry = consumeOAuthState(stateId);
+      if (stateId && !stateEntry) {
+        return send(res, 302, "", { Location: "/prompt.html?admin_login_error=" + encodeURIComponent("登录状态已失效，请重新登录") });
+      }
+      const returnTo = stateEntry?.returnTo || "/prompt.html";
+      if (stateEntry && returnedState !== stateEntry.state) {
+        return send(res, 302, "", { Location: returnTo + "?admin_login_error=" + encodeURIComponent("登录状态校验失败，请重新登录") });
+      }
+      try {
+        const tokenData = await exchangeFeishuCode(auth, code);
+        const profile = await getFeishuUserInfo(tokenData.access_token || tokenData.user_access_token);
+        let adminUser = findAdminUser(config, profile);
+        if (!adminUser && config.adminUsers.length === 0) {
+          adminUser = sanitizeAdminUser({
+            openId: profile.open_id,
+            userId: profile.user_id,
+            unionId: profile.union_id,
+            name: profile.name || profile.en_name || "首位飞书管理员",
+            email: profile.email || "",
+            avatarUrl: profile.avatar_big || profile.avatar_url || "",
+            isAdmin: true,
+            isSuperAdmin: true,
+            addedBy: "first-feishu-login"
+          });
+          config.adminUsers.push(adminUser);
+          await saveConfig(config);
+        }
+        const isAdmin = Boolean(adminUser);
+        const displayUser = adminUser || sanitizeAdminUser({
+          openId: profile.open_id,
+          userId: profile.user_id,
+          unionId: profile.union_id,
+          name: profile.name || profile.en_name || "飞书用户",
+          email: profile.email || "",
+          avatarUrl: profile.avatar_big || profile.avatar_url || "",
+          isSuperAdmin: false
+        });
+        const token = createSession({
+          authType: "feishu",
+          adminUser: {
+            openId: displayUser.openId,
+            userId: displayUser.userId,
+            unionId: displayUser.unionId,
+            name: displayUser.name || profile.name || profile.en_name || "飞书用户",
+            email: displayUser.email || profile.email || "",
+            avatarUrl: displayUser.avatarUrl || profile.avatar_big || profile.avatar_url || "",
+            isAdmin,
+            isSuperAdmin: isAdmin && displayUser.isSuperAdmin !== false
+          }
+        });
+        return send(res, 302, "", {
+          Location: returnTo + "?admin_login_success=1",
+          "Set-Cookie": createCookieHeader(token)
+        });
+      } catch (error) {
+        return send(res, 302, "", { Location: returnTo + "?admin_login_error=" + encodeURIComponent(sanitizeFeishuError(error)) });
+      }
+    }
     if (req.method === "POST" && url.pathname === "/api/generate") {
+      if (!requireUserSession(req, res)) return;
       const body = await getBody(req);
       const visitor = String(body.visitor || "").trim();
       const clientId = String(body.clientId || "").trim();
@@ -788,6 +1111,7 @@ async function route(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/prompt-orchestrator/generate") {
+      if (!requireUserSession(req, res)) return;
       const body = await getBody(req);
       const visitor = String(body.visitor || "").trim();
       const clientId = String(body.clientId || "").trim();
@@ -854,30 +1178,43 @@ async function route(req, res) {
     if (req.method === "POST" && url.pathname === "/api/admin/login") {
       const body = await getBody(req);
       const config = readConfig();
+      if (!isLegacyAdminLoginEnabled(config)) {
+        return sendJson(res, 400, { error: "当前已启用飞书登录，请使用飞书登录管理员。" });
+      }
       const ok = body.username === config.admin.username &&
         hashPassword(String(body.password || ""), config.admin.salt) === config.admin.hash;
       if (!ok) return sendJson(res, 401, { error: "管理员账号或密码错误" });
-      const token = crypto.randomBytes(32).toString("hex");
-      sessions.set(token, Date.now() + 8 * 60 * 60 * 1000);
+      const token = createSession({
+        authType: "legacy",
+        adminUser: { name: config.admin.username, isSuperAdmin: true }
+      });
       return sendJson(res, 200, { ok: true }, {
-        "Set-Cookie": `admin_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800`
+        "Set-Cookie": createCookieHeader(token)
       });
     }
 
     if (req.method === "GET" && url.pathname === "/api/admin/config") {
-      if (!requireAdmin(req, res)) return;
+      const session = requireAdminSession(req, res);
+      if (!session) return;
       const config = readConfig();
       return sendJson(res, 200, {
         username: config.admin.username,
+        feishuAuth: publicFeishuAuth(config),
+        adminUsers: config.adminUsers,
+        currentAdmin: session.adminUser || null,
         apis: (config.apis || []).map((api) => ({ ...api, apiKey: api.apiKey ? "********" : "" }))
       });
     }
 
     if (req.method === "GET" && url.pathname === "/api/admin/llm-config") {
-      if (!requireAdmin(req, res)) return;
+      const session = requireAdminSession(req, res);
+      if (!session) return;
       const config = readConfig();
       return sendJson(res, 200, {
         username: config.admin.username,
+        feishuAuth: publicFeishuAuth(config),
+        adminUsers: config.adminUsers,
+        currentAdmin: session.adminUser || null,
         llmApis: ensureLlmApis(config).map((api) => ({ ...api, apiKey: api.apiKey ? "********" : "" }))
       });
     }
@@ -959,6 +1296,9 @@ async function route(req, res) {
       if (!requireAdmin(req, res)) return;
       const body = await getBody(req);
       const config = readConfig();
+      if (!isLegacyAdminLoginEnabled(config)) {
+        return sendJson(res, 400, { error: "已启用飞书登录后，不再支持修改本地管理员账号密码。" });
+      }
       const ok = body.currentUsername === config.admin.username &&
         hashPassword(String(body.currentPassword || ""), config.admin.salt) === config.admin.hash;
       if (!ok) return sendJson(res, 401, { error: "当前管理员账号或密码错误" });
@@ -971,6 +1311,45 @@ async function route(req, res) {
       config.admin = { username: nextUsername, salt, hash: hashPassword(nextPassword, salt) };
       await saveConfig(config);
       return sendJson(res, 200, { ok: true });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/admin/feishu-config") {
+      const session = requireSuperAdmin(req, res);
+      if (!session) return;
+      const body = await getBody(req);
+      const config = readConfig();
+      config.feishuAuth = sanitizeFeishuAuth({
+        ...body,
+        appSecret: body.appSecret === "********" ? config.feishuAuth.appSecret : body.appSecret
+      });
+      await saveConfig(config);
+      return sendJson(res, 200, { ok: true, feishuAuth: publicFeishuAuth(config) });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/admin/admin-users") {
+      const session = requireSuperAdmin(req, res);
+      if (!session) return;
+      const body = await getBody(req);
+      const config = readConfig();
+      const incoming = sanitizeAdminUser({ ...body, addedBy: session.adminUser?.name || "admin" });
+      if (!incoming.openId && !incoming.userId && !incoming.unionId) {
+        return sendJson(res, 400, { error: "请至少填写 open_id、user_id 或 union_id 之一。" });
+      }
+      const index = config.adminUsers.findIndex((item) => matchAdminUser(item, incoming));
+      if (index >= 0) config.adminUsers[index] = { ...config.adminUsers[index], ...incoming };
+      else config.adminUsers.push(incoming);
+      await saveConfig(config);
+      return sendJson(res, 200, { ok: true, adminUsers: config.adminUsers });
+    }
+
+    if (req.method === "DELETE" && url.pathname.startsWith("/api/admin/admin-users/")) {
+      const session = requireSuperAdmin(req, res);
+      if (!session) return;
+      const id = decodeURIComponent(url.pathname.split("/").pop() || "");
+      const config = readConfig();
+      config.adminUsers = config.adminUsers.filter((user) => ![user.openId, user.userId, user.unionId].includes(id));
+      await saveConfig(config);
+      return sendJson(res, 200, { ok: true, adminUsers: config.adminUsers });
     }
 
     if (req.method === "GET") return serveStatic(req, res);

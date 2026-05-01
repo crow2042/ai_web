@@ -4,7 +4,10 @@
     images: [],
     llmModels: [],
     llmApis: [],
-    visitor: localStorage.getItem("visitorName") || localStorage.getItem("promptVisitor") || "",
+    adminUsers: [],
+    feishuAuth: null,
+    currentAdmin: null,
+    visitor: "",
     clientId: localStorage.getItem("clientId") || localStorage.getItem("aiImageClientId") || crypto.randomUUID(),
     lastGeneratedPrompt: "",
     lastGeneratedJson: "",
@@ -37,11 +40,7 @@
   const toggleOutputBtn = $("toggleOutputBtn");
   const jumpToImageBtn = $("jumpToImageBtn");
   const llmModelSelect = $("llmModelSelect");
-  const visitorBadge = $("visitorBadge");
   const outputBox = promptOutput.closest(".output-box");
-  const identityModal = $("identityModal");
-  const identityForm = $("identityForm");
-  const visitorNameInput = $("visitorName");
 
   const adminDialog = $("promptAdminDialog");
   const settingsBtn = $("promptSettingsBtn");
@@ -49,6 +48,20 @@
   const loginForm = $("promptLoginForm");
   const adminPanel = $("promptAdminPanel");
   const loginStatus = $("promptLoginStatus");
+  const feishuLoginBtn = $("promptFeishuLoginBtn");
+  const legacyLoginBtn = $("promptLegacyLoginBtn");
+  const legacyLoginFields = $("legacyLoginFields");
+  const adminLogoutBtn = $("promptAdminLogoutBtn");
+  const currentAdminInfo = $("currentAdminInfo");
+  const feishuConfigSection = $("feishuConfigSection");
+  const feishuConfigForm = $("feishuConfigForm");
+  const feishuConfigStatus = $("feishuConfigStatus");
+  const adminUsersSection = $("adminUsersSection");
+  const adminUserForm = $("adminUserForm");
+  const adminUserStatus = $("adminUserStatus");
+  const adminUsersList = $("adminUsersList");
+  const llmAdminSection = $("llmAdminSection");
+  const promptRecordsAdminSection = $("promptRecordsAdminSection");
   const llmApiList = $("llmApiList");
   const llmApiForm = $("llmApiForm");
   const llmApiFormTitle = $("llmApiFormTitle");
@@ -96,38 +109,51 @@
     }
   }
 
-  function syncVisitor(value) {
-    state.visitor = String(value || "").trim();
-    localStorage.setItem("visitorName", state.visitor);
-    localStorage.setItem("promptVisitor", state.visitor);
-    visitorNameInput.value = state.visitor;
-  }
-
-  function showIdentityIfNeeded() {
-    if (state.visitor) {
-      visitorBadge.textContent = `当前访问者：${state.visitor}`;
-      identityModal.classList.add("hidden");
-      return true;
-    }
-    visitorBadge.textContent = "未登记使用者";
-    identityModal.classList.remove("hidden");
-    return false;
-  }
-
-  function ensureVisitor() {
-    if (showIdentityIfNeeded()) return true;
-    visitorNameInput.focus();
-    return false;
-  }
 
   function showPromptLogin() {
     loginForm.classList.remove("hidden");
     adminPanel.classList.add("hidden");
+    syncAdminVisibility();
   }
 
   function showPromptAdminPanel() {
     loginForm.classList.add("hidden");
     adminPanel.classList.remove("hidden");
+  }
+
+  function renderCurrentAdmin() {
+    const admin = state.currentAdmin;
+    currentAdminInfo.textContent = admin
+      ? '当前管理员：' + (admin.name || admin.openId || admin.userId || '未命名') + (admin.isSuperAdmin === false ? '（普通管理员）' : '（超级管理员）')
+      : '当前未识别到管理员信息';
+  }
+
+  function renderAdminUsers() {
+    if (!state.adminUsers.length) {
+      adminUsersList.innerHTML = '<p class="empty-text">还没有配置飞书管理员，请先添加至少一位。</p>';
+      return;
+    }
+    adminUsersList.innerHTML = state.adminUsers.map((user) => {
+      const key = user.openId || user.userId || user.unionId;
+      return '<article class="api-item"><div><strong>' + escapeHtml(user.name || key || '未命名管理员') + '</strong><div class="muted">Open ID：' + escapeHtml(user.openId || '-') + '</div><div class="muted">User ID：' + escapeHtml(user.userId || '-') + '</div><div class="muted">邮箱：' + escapeHtml(user.email || '-') + '</div><div class="muted">角色：' + (user.isSuperAdmin === false ? '普通管理员' : '超级管理员') + '</div></div><div class="api-actions"><button class="compact danger" type="button" data-delete-admin="' + escapeHtml(key) + '">移除</button></div></article>';
+    }).join('');
+  }
+
+  function syncFeishuLoginView() {
+    const enabled = state.feishuAuth?.enabled !== false;
+    feishuLoginBtn.classList.toggle('hidden', !enabled);
+    legacyLoginFields.classList.toggle('hidden', enabled);
+    legacyLoginBtn.classList.toggle('hidden', enabled);
+  }
+
+  function syncAdminVisibility() {
+    const isAdmin = Boolean(state.currentAdmin?.isAdmin || state.currentAdmin?.isSuperAdmin);
+    const isSuperAdmin = Boolean(state.currentAdmin) && state.currentAdmin.isSuperAdmin !== false && isAdmin;
+    feishuConfigSection.classList.toggle("hidden", !isSuperAdmin);
+    adminUsersSection.classList.toggle("hidden", !isSuperAdmin);
+    llmAdminSection.classList.toggle("hidden", !isAdmin);
+    promptRecordsAdminSection.classList.toggle("hidden", !isAdmin);
+    if (!isAdmin) llmApiForm.classList.add("hidden");
   }
 
   function rememberAdminSession() {
@@ -463,7 +489,10 @@
   }
 
   async function generate() {
-    if (!ensureVisitor()) return;
+    if (!state.loggedIn) {
+      resultSummary.textContent = "请先登录飞书~";
+      return;
+    }
     const input = readInputs();
     setPromptOutput("");
     hideJumpToImage();
@@ -576,10 +605,139 @@
   async function loadAdminConfig() {
     const data = await apiFetch("/api/admin/llm-config");
     state.llmApis = data.llmApis || [];
+    state.adminUsers = data.adminUsers || [];
+    state.feishuAuth = data.feishuAuth || null;
+    state.currentAdmin = data.currentAdmin || null;
     writeSessionCache(promptAdminConfigCacheKey, state.llmApis);
+    $("feishuEnabled").checked = state.feishuAuth?.enabled !== false;
+    $("feishuAppId").value = state.feishuAuth?.appId || "";
+    $("feishuAppSecret").value = state.feishuAuth?.appSecret || "";
+    $("feishuRedirectUri").value = state.feishuAuth?.redirectUri || "";
+    renderCurrentAdmin();
+    renderAdminUsers();
+    syncFeishuLoginView();
+    syncAdminVisibility();
     renderLlmApiList();
-    if (promptRecordsList && !promptRecordsList.children.length) {
-      promptRecordsList.innerHTML = `<p class="empty-text">点击“刷新记录”加载管理员记录。</p>`;
+  }
+
+  async function loadAdminMeta() {
+    const data = await apiFetch("/api/admin/feishu/meta");
+    state.feishuAuth = data.feishuAuth || null;
+    syncFeishuLoginView();
+  }
+
+  async function beginFeishuLogin() {
+    loginStatus.textContent = "正在跳转到飞书登录...";
+    const data = await apiFetch("/api/admin/feishu/login?returnTo=" + encodeURIComponent("/prompt.html"));
+    window.location.href = data.url;
+  }
+
+  async function logoutAdmin() {
+    await apiFetch("/api/admin/logout", { method: "POST" });
+    forgetAdminSession();
+    state.currentAdmin = null;
+    state.loggedIn = false;
+    state.visitor = "";
+    generateBtn.disabled = true;
+    generateBtn.title = "请先登录飞书~";
+    showPromptLogin();
+    loginStatus.textContent = "已退出管理员登录。";
+  }
+
+  async function saveFeishuConfig(event) {
+    event.preventDefault();
+    feishuConfigStatus.textContent = "保存中...";
+    try {
+      await apiFetch("/api/admin/feishu-config", {
+        method: "POST",
+        body: JSON.stringify({
+          enabled: $("feishuEnabled").checked,
+          appId: $("feishuAppId").value,
+          appSecret: $("feishuAppSecret").value || "********",
+          redirectUri: $("feishuRedirectUri").value
+        })
+      });
+      feishuConfigStatus.textContent = "飞书配置已保存。";
+      await loadAdminConfig();
+    } catch (error) {
+      feishuConfigStatus.textContent = error.message;
+    }
+  }
+
+  async function saveAdminUser(event) {
+    event.preventDefault();
+    adminUserStatus.textContent = "保存中...";
+    try {
+      const data = await apiFetch("/api/admin/admin-users", {
+        method: "POST",
+        body: JSON.stringify({
+          name: $("adminUserName").value,
+          openId: $("adminUserOpenId").value,
+          userId: $("adminUserUserId").value,
+          unionId: $("adminUserUnionId").value,
+          email: $("adminUserEmail").value,
+          isSuperAdmin: $("adminUserSuperAdmin").checked
+        })
+      });
+      state.adminUsers = data.adminUsers || [];
+      renderAdminUsers();
+      adminUserStatus.textContent = "管理员名单已更新。";
+      adminUserForm.reset();
+      $("adminUserSuperAdmin").checked = true;
+    } catch (error) {
+      adminUserStatus.textContent = error.message;
+    }
+  }
+
+  async function checkAdminSessionAfterRedirect() {
+    const params = new URLSearchParams(window.location.search);
+    const success = params.get("admin_login_success");
+    const error = params.get("admin_login_error");
+    if (!success && !error) return;
+    const cleanUrl = window.location.pathname + (window.location.hash || "");
+    window.history.replaceState({}, document.title, cleanUrl);
+    if (error) {
+      showPromptLogin();
+      loginStatus.textContent = error;
+      return;
+    }
+    try {
+      const session = await apiFetch("/api/admin/session");
+      if (session.authed) {
+        rememberAdminSession();
+        state.currentAdmin = session.adminUser || null;
+        showPromptAdminPanel();
+        renderCurrentAdmin();
+        syncAdminVisibility();
+        loginStatus.textContent = "";
+        if (state.currentAdmin?.isAdmin || state.currentAdmin?.isSuperAdmin) {
+          await loadAdminConfig();
+        }
+      }
+    } catch (sessionError) {
+      loginStatus.textContent = sessionError.message;
+    }
+  }
+
+  async function fetchVisitorFromSession() {
+    try {
+      const session = await apiFetch("/api/admin/session");
+      if (session.authed) {
+        rememberAdminSession();
+        state.currentAdmin = session.adminUser || null;
+        state.visitor = state.currentAdmin?.name || state.currentAdmin?.openId || "";
+        state.loggedIn = true;
+        showPromptAdminPanel();
+        renderCurrentAdmin();
+        syncAdminVisibility();
+      }
+    } catch {}
+    if (!state.loggedIn) {
+      generateBtn.disabled = true;
+      generateBtn.title = "请先登录飞书~";
+    } else {
+      generateBtn.disabled = false;
+      generateBtn.title = "";
     }
   }
 
@@ -812,35 +970,30 @@
 
   settingsBtn.addEventListener("click", async () => {
     adminDialog.showModal();
-    if (sessionStorage.getItem(adminSessionKey) === "1") {
-      showPromptAdminPanel();
-      loginStatus.textContent = "";
-      const cachedApis = readSessionCache(promptAdminConfigCacheKey, []);
-      const cachedRecords = readSessionCache(promptAdminRecordsCacheKey, []);
-      hydratePromptAdminCache();
-      if (!Array.isArray(cachedApis) || !cachedApis.length) {
-        loadAdminConfig().catch(() => {
-          forgetAdminSession();
-          showPromptLogin();
-          loginStatus.textContent = "登录已失效，请重新登录。";
-        });
-      }
-      if (!Array.isArray(cachedRecords) || !cachedRecords.length) {
-        loadPromptRecords().catch(() => {});
-      }
-      return;
-    }
-    showPromptLogin();
     loginStatus.textContent = "";
+    try {
+      const session = await apiFetch("/api/admin/session");
+      if (!session.authed) {
+        showPromptLogin();
+        await loadAdminMeta().catch(() => {});
+        return;
+      }
+      rememberAdminSession();
+      state.currentAdmin = session.adminUser || null;
+      showPromptAdminPanel();
+      renderCurrentAdmin();
+      syncAdminVisibility();
+      if (state.currentAdmin?.isAdmin || state.currentAdmin?.isSuperAdmin) {
+        hydratePromptAdminCache();
+        await loadAdminConfig();
+      }
+    } catch (error) {
+      forgetAdminSession();
+      showPromptLogin();
+      loginStatus.textContent = error.message;
+    }
   });
   closeAdminBtn.addEventListener("click", () => adminDialog.close());
-  identityForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const name = visitorNameInput.value.trim();
-    if (!name) return;
-    syncVisitor(name);
-    showIdentityIfNeeded();
-  });
   loginForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     loginStatus.textContent = "登录中...";
@@ -853,6 +1006,10 @@
         })
       });
       rememberAdminSession();
+      state.loggedIn = true;
+      state.visitor = $("promptAdminUser").value;
+      generateBtn.disabled = false;
+      generateBtn.title = "";
       showPromptAdminPanel();
       hydratePromptAdminCache();
       loginStatus.textContent = "";
@@ -865,10 +1022,28 @@
         loginStatus.textContent = error.message;
       });
       if (!readSessionCache(promptAdminRecordsCacheKey, []).length) {
-        promptRecordsList.innerHTML = `<p class="empty-text">点击“刷新记录”加载管理员记录。</p>`;
+        promptRecordsList.innerHTML = '<p class="empty-text">点击“刷新记录”加载管理员记录。</p>';
       }
     } catch (error) {
       loginStatus.textContent = error.message;
+    }
+  });
+
+  feishuLoginBtn.addEventListener("click", beginFeishuLogin);
+  adminLogoutBtn.addEventListener("click", logoutAdmin);
+  feishuConfigForm.addEventListener("submit", saveFeishuConfig);
+  adminUserForm.addEventListener("submit", saveAdminUser);
+  adminUsersList.addEventListener("click", async (event) => {
+    const id = event.target.dataset.deleteAdmin;
+    if (!id) return;
+    if (!confirm("确定移除这个管理员吗？")) return;
+    try {
+      const data = await apiFetch("/api/admin/admin-users/" + encodeURIComponent(id), { method: "DELETE" });
+      state.adminUsers = data.adminUsers || [];
+      renderAdminUsers();
+      adminUserStatus.textContent = "管理员已移除。";
+    } catch (error) {
+      adminUserStatus.textContent = error.message;
     }
   });
 
@@ -925,12 +1100,22 @@
   generateBtn.addEventListener("click", generate);
   resetBtn.addEventListener("click", resetInput);
 
-  syncVisitor(state.visitor);
   updateModeCards();
   setPromptOutput("");
   updateOutputButtons();
-  showIdentityIfNeeded();
-  importPendingPromptTask();
-  loadLlmModels();
-  loadLocalPromptRecords({ preferCache: true });
+  loadAdminMeta().catch(() => {});
+  checkAdminSessionAfterRedirect()
+    .then(() => fetchVisitorFromSession())
+    .then(() => {
+      importPendingPromptTask().catch(() => {});
+      loadLlmModels().catch(() => {});
+      loadLocalPromptRecords({ preferCache: true }).catch(() => {});
+      if (new URLSearchParams(window.location.search).get("settings") === "1") {
+        window.history.replaceState({}, document.title, window.location.pathname + (window.location.hash || ""));
+        settingsBtn.click();
+      }
+    })
+    .catch((error) => {
+      loginStatus.textContent = error.message;
+    });
 })();

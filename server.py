@@ -51,7 +51,11 @@ def ensure_data():
 def read_config():
     ensure_data()
     with lock:
-        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        config = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    config.setdefault("apis", [])
+    config.setdefault("llmApis", [])
+    config.setdefault("adminUsers", [])
+    return config
 
 
 def save_config(config):
@@ -212,6 +216,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/models":
             self.send_json(200, {"models": public_apis(read_config())})
+            return
+        if parsed.path == "/api/admin/session":
+            authed = self.is_authed()
+            self.send_json(200, {"authed": authed, "authType": "legacy", "adminUser": None} if authed else {"authed": False})
             return
         if parsed.path == "/api/admin/config":
             if not self.require_admin():

@@ -1,5 +1,5 @@
 const state = {
-  visitor: localStorage.getItem("visitorName") || "",
+  visitor: "",
   clientId: getClientId(),
   allModels: [],
   models: [],
@@ -14,7 +14,10 @@ const state = {
   promptDrafts: {
     plain: "",
     json: ""
-  }
+  },
+  adminUsers: [],
+  feishuAuth: null,
+  currentAdmin: null
 };
 const adminSessionKey = "adminSessionActive";
 const recordModeCacheKey = "previewRecordModeCache";
@@ -102,15 +105,6 @@ function readFileAsDataUrl(file) {
     reader.onerror = () => reject(new Error("参考图读取失败"));
     reader.readAsDataURL(file);
   });
-}
-
-function showIdentityIfNeeded() {
-  if (state.visitor) {
-    $("visitorBadge").textContent = `当前访问者：${state.visitor}`;
-    $("identityModal").classList.add("hidden");
-  } else {
-    $("identityModal").classList.remove("hidden");
-  }
 }
 
 async function loadModels() {
@@ -233,7 +227,7 @@ function setRequestMode(mode) {
     ? "edit 改图模式下，请先上传至少一张原图或参考图。"
     : (state.references.length
       ? `已选择 ${state.references.length} 张参考图，可在 prompt 中按编号描述。`
-      : "可选，可在 prompt 中描述“参考图 1”的主体或“参考图 2”的风格。");
+      : '可选，可在 prompt 中描述"参考图 1"的主体或"参考图 2"的风格。');
   renderModelOptions();
 }
 
@@ -301,13 +295,13 @@ function getPromptPayload(aspect) {
 }
 
 async function generateImage() {
+  if (!state.loggedIn) {
+    setStatus("statusText", "请先登录飞书~", true);
+    return;
+  }
   const modelId = $("modelSelect").value;
   const aspect = getSelectedAspect();
   const count = Number($("countSelect").value);
-  if (!state.visitor) {
-    $("identityModal").classList.remove("hidden");
-    return;
-  }
   if (!modelId) {
     setStatus("statusText", "请先选择一个已配置的模型。", true);
     return;
@@ -454,30 +448,77 @@ function triggerBlobDownload(href, name) {
   link.remove();
 }
 
-function openAdmin() {
-  $("adminDialog").showModal();
-  if (sessionStorage.getItem(adminSessionKey) === "1") {
-    showAdminPanel();
-    setStatus("loginStatus", "");
-    loadAdminConfig().catch(() => {
-      sessionStorage.removeItem(adminSessionKey);
-      showAdminLogin();
-    });
-    loadRecords().catch(() => {});
-    return;
+async function fetchVisitorFromSession() {
+  try {
+    const session = await request("/api/admin/session");
+    if (session.authed) {
+      const admin = session.adminUser || null;
+      state.visitor = admin?.name || admin?.openId || "";
+      state.loggedIn = true;
+    }
+  } catch (_) {}
+  const btn = $("generateBtn");
+  if (!state.loggedIn) {
+    btn.disabled = true;
+    btn.title = "请先登录飞书~";
+  } else {
+    btn.disabled = false;
+    btn.title = "";
   }
-  showAdminLogin();
+}
+
+async function openAdmin() {
+  $("adminDialog").showModal();
   setStatus("loginStatus", "");
+  showAdminPanel();
+  try {
+    await loadAdminConfig();
+  } catch (_) {}
+  loadRecords().catch(() => {});
 }
 
 function showAdminLogin() {
   $("loginForm").classList.remove("hidden");
   $("adminPanel").classList.add("hidden");
+  syncAdminVisibility();
 }
 
 function showAdminPanel() {
   $("loginForm").classList.add("hidden");
   $("adminPanel").classList.remove("hidden");
+}
+
+function renderCurrentAdmin() {
+  const admin = state.currentAdmin;
+  $("currentAdminInfo").textContent = admin
+    ? "当前管理员：" + (admin.name || admin.openId || admin.userId || "未命名") + (admin.isSuperAdmin === false ? "（普通管理员）" : "（超级管理员）")
+    : "当前未识别到管理员信息";
+}
+
+function renderAdminUsers() {
+  const list = $("adminUsersList");
+  if (!state.adminUsers.length) {
+    list.innerHTML = '<p class="empty-text">还没有配置飞书管理员，请先添加至少一位。</p>';
+    return;
+  }
+  list.innerHTML = state.adminUsers.map((user) => {
+    const key = user.openId || user.userId || user.unionId;
+    return '<article class="api-item"><div><strong>' + escapeHtml(user.name || key || "未命名管理员") + '</strong><div class="muted">Open ID：' + escapeHtml(user.openId || "-") + '</div><div class="muted">User ID：' + escapeHtml(user.userId || "-") + '</div><div class="muted">邮箱：' + escapeHtml(user.email || "-") + '</div><div class="muted">角色：' + (user.isSuperAdmin === false ? "普通管理员" : "超级管理员") + '</div></div><div class="api-actions"><button class="compact danger" type="button" data-delete-admin="' + escapeHtml(key) + '">移除</button></div></article>';
+  }).join("");
+}
+
+function syncFeishuLoginView() {
+  const enabled = state.feishuAuth?.enabled !== false;
+  $("feishuLoginBtn").classList.toggle("hidden", !enabled);
+  $("legacyLoginFields").classList.toggle("hidden", enabled);
+  $("legacyLoginBtn").classList.toggle("hidden", enabled);
+}
+
+function syncAdminVisibility() {
+  const isAdmin = Boolean(state.currentAdmin?.isAdmin || state.currentAdmin?.isSuperAdmin);
+  const isSuperAdmin = Boolean(state.currentAdmin) && state.currentAdmin.isSuperAdmin !== false && isAdmin;
+  $("feishuConfigSection").classList.toggle("hidden", !isSuperAdmin);
+  $("adminUsersSection").classList.toggle("hidden", !isSuperAdmin);
 }
 
 async function loginAdmin(event) {
@@ -489,6 +530,10 @@ async function loginAdmin(event) {
       body: JSON.stringify({ username: $("adminUser").value.trim(), password: $("adminPass").value })
     });
     sessionStorage.setItem(adminSessionKey, "1");
+    state.loggedIn = true;
+    state.visitor = $("adminUser").value.trim();
+    $("generateBtn").disabled = false;
+    $("generateBtn").title = "";
     showAdminPanel();
     setStatus("loginStatus", "");
     loadAdminConfig().catch((error) => {
@@ -502,13 +547,125 @@ async function loginAdmin(event) {
   }
 }
 
+async function loadAdminMeta() {
+  const data = await request("/api/admin/feishu/meta");
+  state.feishuAuth = data.feishuAuth || null;
+  syncFeishuLoginView();
+}
+
+async function beginFeishuLogin() {
+  setStatus("loginStatus", "正在跳转到飞书登录...");
+  const data = await request("/api/admin/feishu/login?returnTo=" + encodeURIComponent("/image.html"));
+  window.location.href = data.url;
+}
+
+async function logoutAdmin() {
+  await request("/api/admin/logout", { method: "POST" });
+  sessionStorage.removeItem(adminSessionKey);
+  state.currentAdmin = null;
+  state.loggedIn = false;
+  state.visitor = "";
+  $("generateBtn").disabled = true;
+  $("generateBtn").title = "请先登录飞书~";
+  showAdminLogin();
+  setStatus("loginStatus", "已退出管理员登录。");
+}
+
+async function saveFeishuConfig(event) {
+  event.preventDefault();
+  $("feishuConfigStatus").textContent = "保存中...";
+  try {
+    await request("/api/admin/feishu-config", {
+      method: "POST",
+      body: JSON.stringify({
+        enabled: $("feishuEnabled").checked,
+        appId: $("feishuAppId").value,
+        appSecret: $("feishuAppSecret").value || "********",
+        redirectUri: $("feishuRedirectUri").value
+      })
+    });
+    $("feishuConfigStatus").textContent = "飞书配置已保存。";
+    await loadAdminConfig();
+  } catch (error) {
+    $("feishuConfigStatus").textContent = error.message;
+  }
+}
+
+async function saveAdminUser(event) {
+  event.preventDefault();
+  $("adminUserStatus").textContent = "保存中...";
+  try {
+    const data = await request("/api/admin/admin-users", {
+      method: "POST",
+      body: JSON.stringify({
+        name: $("adminUserName").value,
+        openId: $("adminUserOpenId").value,
+        userId: $("adminUserUserId").value,
+        unionId: $("adminUserUnionId").value,
+        email: $("adminUserEmail").value,
+        isSuperAdmin: $("adminUserSuperAdmin").checked
+      })
+    });
+    state.adminUsers = data.adminUsers || [];
+    renderAdminUsers();
+    $("adminUserStatus").textContent = "管理员名单已更新。";
+    $("adminUserForm").reset();
+    $("adminUserSuperAdmin").checked = true;
+  } catch (error) {
+    $("adminUserStatus").textContent = error.message;
+  }
+}
+
+async function checkAdminSessionAfterRedirect() {
+  const params = new URLSearchParams(window.location.search);
+  const success = params.get("admin_login_success");
+  const error = params.get("admin_login_error");
+  if (!success && !error) return;
+  const cleanUrl = window.location.pathname + (window.location.hash || "");
+  window.history.replaceState({}, document.title, cleanUrl);
+  if (error) {
+    showAdminLogin();
+    setStatus("loginStatus", error);
+    $("adminDialog").showModal();
+    return;
+  }
+  try {
+    const session = await request("/api/admin/session");
+    if (session.authed) {
+      sessionStorage.setItem(adminSessionKey, "1");
+      state.currentAdmin = session.adminUser || null;
+      showAdminPanel();
+      renderCurrentAdmin();
+      syncAdminVisibility();
+      setStatus("loginStatus", "");
+      $("adminDialog").showModal();
+      if (state.currentAdmin?.isAdmin || state.currentAdmin?.isSuperAdmin) {
+        await loadAdminConfig();
+      }
+    }
+  } catch (sessionError) {
+    setStatus("loginStatus", sessionError.message);
+  }
+}
+
 async function loadAdminConfig() {
   const data = await request("/api/admin/config");
   $("currentUser").value = data.username || "";
   $("nextUser").value = data.username || "";
+  state.adminUsers = data.adminUsers || [];
+  state.feishuAuth = data.feishuAuth || null;
+  state.currentAdmin = data.currentAdmin || null;
+  $("feishuEnabled").checked = state.feishuAuth?.enabled !== false;
+  $("feishuAppId").value = state.feishuAuth?.appId || "";
+  $("feishuAppSecret").value = state.feishuAuth?.appSecret || "";
+  $("feishuRedirectUri").value = state.feishuAuth?.redirectUri || "";
+  renderCurrentAdmin();
+  renderAdminUsers();
+  syncFeishuLoginView();
+  syncAdminVisibility();
   renderApis(data.apis || []);
   if (!$("recordsList").children.length) {
-    $("recordsList").innerHTML = '<div class="placeholder">点击“刷新记录”加载管理员记录。</div>';
+    $("recordsList").innerHTML = '<div class="placeholder">点击"刷新记录"加载管理员记录。</div>';
   }
 }
 
@@ -836,7 +993,7 @@ async function handleReferenceFiles(fileList) {
   $("referenceInput").value = "";
   if (!files.length) {
     renderReferenceThumbs();
-    $("referenceNote").textContent = "可选，可在 prompt 中描述“参考图 1”的主体或“参考图 2”的风格。";
+    $("referenceNote").textContent = '可选，可在 prompt 中描述"参考图 1"的主体或"参考图 2"的风格。';
     return;
   }
   const limited = files.slice(0, 9);
@@ -969,7 +1126,7 @@ function removeReference(index) {
   updateClearReferencesButton();
   $("referenceNote").textContent = state.references.length
     ? `已选择 ${state.references.length} 张参考图，可在 prompt 中按编号描述。`
-    : "可选，可在 prompt 中描述“参考图 1”的主体或“参考图 2”的风格。";
+    : '可选，可在 prompt 中描述"参考图 1"的主体或"参考图 2"的风格。';
 }
 
 function clearReferences() {
@@ -1014,17 +1171,26 @@ $("uploadZone").addEventListener("drop", (event) => {
   handleReferenceFiles(event.dataTransfer.files);
 });
 
-$("identityForm").addEventListener("submit", (event) => {
-  event.preventDefault();
-  state.visitor = $("visitorName").value.trim();
-  if (!state.visitor) return;
-  localStorage.setItem("visitorName", state.visitor);
-  showIdentityIfNeeded();
-});
-
 $("settingsBtn").addEventListener("click", openAdmin);
 $("closeAdminBtn").addEventListener("click", () => $("adminDialog").close());
 $("loginForm").addEventListener("submit", loginAdmin);
+$("feishuLoginBtn").addEventListener("click", beginFeishuLogin);
+$("adminLogoutBtn").addEventListener("click", logoutAdmin);
+$("feishuConfigForm").addEventListener("submit", saveFeishuConfig);
+$("adminUserForm").addEventListener("submit", saveAdminUser);
+$("adminUsersList").addEventListener("click", async (event) => {
+  const id = event.target.dataset.deleteAdmin;
+  if (!id) return;
+  if (!confirm("确定移除这个管理员吗？")) return;
+  try {
+    const data = await request("/api/admin/admin-users/" + encodeURIComponent(id), { method: "DELETE" });
+    state.adminUsers = data.adminUsers || [];
+    renderAdminUsers();
+    $("adminUserStatus").textContent = "管理员已移除。";
+  } catch (error) {
+    $("adminUserStatus").textContent = error.message;
+  }
+});
 $("apiForm").addEventListener("submit", saveApi);
 $("passwordForm").addEventListener("submit", changePassword);
 $("newApiBtn").addEventListener("click", clearApiForm);
@@ -1043,9 +1209,9 @@ $("plainPromptBtn").addEventListener("click", () => setPromptFormat("plain"));
 $("jsonPromptBtn").addEventListener("click", () => setPromptFormat("json"));
 $("promptInput").addEventListener("input", syncPromptDraft);
 
-$("visitorName").value = state.visitor;
-showIdentityIfNeeded();
+checkAdminSessionAfterRedirect().catch(() => {});
+fetchVisitorFromSession().catch(() => {});
 renderPromptInput();
 importPendingImageTask().catch((error) => setStatus("statusText", error.message, true));
 loadModels().catch((error) => setStatus("statusText", error.message, true));
-loadUserRecords();
+loadUserRecords().catch((error) => setStatus("statusText", error.message, true));

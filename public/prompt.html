@@ -7,20 +7,9 @@
     <link rel="stylesheet" href="/prompt.css?v=handoff" />
   </head>
   <body>
-    <div class="identity-modal" id="identityModal">
-      <form class="modal-panel" id="identityForm">
-        <div class="modal-mark">AI</div>
-        <h1>请输入访问者身份</h1>
-        <p>名称会记录到每次 Prompt 优化任务中，方便多人同时使用时追踪来源。</p>
-        <input id="visitorName" autocomplete="name" placeholder="例如：张三 / 设计组 A" required />
-        <button type="submit">进入优化器</button>
-      </form>
-    </div>
-
     <header class="prompt-topbar">
       <div>
         <strong>Prompt 优化器</strong>
-        <span id="visitorBadge">未登记使用者</span>
       </div>
       <nav>
         <a href="/">功能大厅</a>
@@ -151,22 +140,69 @@
 
     <dialog id="promptAdminDialog" class="prompt-dialog">
       <div class="dialog-head">
-        <h2>Prompt 优化器设置</h2>
+        <h2>账号与管理</h2>
         <button id="closePromptAdminBtn" class="icon-button" type="button" aria-label="关闭">×</button>
       </div>
 
       <form id="promptLoginForm" class="admin-card">
-        <h3>管理员登录</h3>
-        <div class="admin-grid">
+        <h3>飞书登录</h3>
+        <p>登录后可使用 AI 生图工作台和 Prompt 优化器；管理员会看到额外管理功能。</p>
+        <div id="legacyLoginFields" class="admin-grid">
           <label>账号<input id="promptAdminUser" value="admin" autocomplete="username" /></label>
           <label>密码<input id="promptAdminPass" type="password" autocomplete="current-password" /></label>
         </div>
-        <button type="submit" class="primary compact">登录</button>
+        <div class="admin-actions-row">
+          <button id="promptFeishuLoginBtn" type="button" class="primary compact">飞书登录</button>
+          <button id="promptLegacyLoginBtn" type="submit" class="compact">旧管理员登录</button>
+        </div>
         <p id="promptLoginStatus" class="status"></p>
       </form>
 
       <div id="promptAdminPanel" class="admin-panel hidden">
         <section class="admin-card">
+          <div class="card-head">
+            <h3>当前账号</h3>
+            <button id="promptAdminLogoutBtn" class="compact" type="button">退出登录</button>
+          </div>
+          <div id="currentAdminInfo" class="status"></div>
+        </section>
+
+        <section id="feishuConfigSection" class="admin-card hidden">
+          <div class="card-head">
+            <h3>飞书登录配置</h3>
+          </div>
+          <form id="feishuConfigForm">
+            <div class="admin-grid">
+              <label class="check-row"><input id="feishuEnabled" type="checkbox" checked /> 启用飞书登录</label>
+              <label>App ID<input id="feishuAppId" placeholder="cli_xxx" /></label>
+              <label>App Secret<input id="feishuAppSecret" type="password" placeholder="保存后会隐藏" /></label>
+              <label>回调地址<input id="feishuRedirectUri" placeholder="http://localhost:3000/api/admin/feishu/callback" /></label>
+            </div>
+            <button type="submit" class="primary compact">保存飞书配置</button>
+            <p id="feishuConfigStatus" class="status"></p>
+          </form>
+        </section>
+
+        <section id="adminUsersSection" class="admin-card hidden">
+          <div class="card-head">
+            <h3>管理员名单</h3>
+          </div>
+          <form id="adminUserForm">
+            <div class="admin-grid">
+              <label>姓名<input id="adminUserName" placeholder="例如：张三" /></label>
+              <label>Open ID<input id="adminUserOpenId" placeholder="ou_xxx" /></label>
+              <label>User ID<input id="adminUserUserId" placeholder="可选" /></label>
+              <label>Union ID<input id="adminUserUnionId" placeholder="可选" /></label>
+              <label>邮箱<input id="adminUserEmail" placeholder="可选" /></label>
+              <label class="check-row"><input id="adminUserSuperAdmin" type="checkbox" checked /> 超级管理员</label>
+            </div>
+            <button type="submit" class="primary compact">添加或更新管理员</button>
+            <p id="adminUserStatus" class="status"></p>
+          </form>
+          <div id="adminUsersList" class="api-list"></div>
+        </section>
+
+        <section id="llmAdminSection" class="admin-card hidden">
           <div class="card-head">
             <h3>LLM API / 模型管理</h3>
             <button id="newLlmApiBtn" class="compact" type="button">新增模型</button>
@@ -189,7 +225,7 @@
           <p id="llmApiStatus" class="status"></p>
         </form>
 
-        <section class="admin-card">
+        <section id="promptRecordsAdminSection" class="admin-card hidden">
           <div class="card-head">
             <h3>Prompt 优化记录</h3>
             <button id="refreshPromptRecordsBtn" class="compact" type="button">刷新记录</button>
@@ -198,7 +234,6 @@
         </section>
       </div>
     </dialog>
-
     <dialog id="promptRecordDialog" class="prompt-dialog record-detail-dialog">
       <div class="dialog-head">
         <h2 id="promptRecordDialogTitle">记录详情</h2>
@@ -207,6 +242,6 @@
       <div id="promptRecordDetail" class="record-detail"></div>
     </dialog>
 
-    <script src="/prompt.js?v=handoff"></script>
+    <script src="/prompt.js?v=feishu-admin-3"></script>
   </body>
 </html>

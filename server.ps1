@@ -43,7 +43,11 @@ function Read-Config {
   Ensure-Data
   [Threading.Monitor]::Enter($DataLock)
   try {
-    return (Get-Content -Raw -Path $ConfigFile -Encoding UTF8 | ConvertFrom-Json)
+    $config = Get-Content -Raw -Path $ConfigFile -Encoding UTF8 | ConvertFrom-Json
+    if (-not $config.PSObject.Properties["apis"]) { $config | Add-Member -NotePropertyName apis -NotePropertyValue @() }
+    Ensure-LlmApisProperty $config
+    if (-not $config.PSObject.Properties["adminUsers"]) { $config | Add-Member -NotePropertyName adminUsers -NotePropertyValue @() }
+    return $config
   } finally {
     [Threading.Monitor]::Exit($DataLock)
   }
@@ -936,6 +940,17 @@ function Handle-Request($Context) {
     if ($req.HttpMethod -eq "GET" -and $path -eq "/api/admin/prompt-records") {
       if (!(Test-Admin $req)) { Send-Json $res 401 @{ error = "请先登录管理员账号" }; return }
       Send-Json $res 200 @{ records = @(Read-PromptRecords) }
+      return
+    }
+
+    if ($req.HttpMethod -eq "GET" -and $path -eq "/api/admin/session") {
+      $token = Get-CookieValue -Request $req -Name "admin_session"
+      $valid = ($token -and $Sessions.ContainsKey($token) -and $Sessions[$token] -gt [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+      if ($valid) {
+        Send-Json $res 200 @{ authed = $true; authType = "legacy"; adminUser = $null }
+      } else {
+        Send-Json $res 200 @{ authed = $false }
+      }
       return
     }
 

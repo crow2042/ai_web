@@ -1,8 +1,27 @@
-{
+﻿{
   "admin": {
     "username": "admin",
     "salt": "replace_with_random_hex_salt",
     "hash": "replace_with_pbkdf2_sha256_hash"
+  },
+  "adminUsers": [
+    {
+      "openId": "ou_xxx",
+      "userId": "xxxxxxxx",
+      "unionId": "on_xxx",
+      "name": "张三",
+      "email": "zhangsan@example.com",
+      "avatarUrl": "",
+      "isSuperAdmin": true,
+      "addedAt": "2026-05-01T00:00:00.000Z",
+      "addedBy": "system"
+    }
+  ],
+  "feishuAuth": {
+    "enabled": true,
+    "appId": "cli_xxx",
+    "appSecret": "xxx",
+    "redirectUri": "http://localhost:3000/api/admin/feishu/callback"
   },
   "apis": [
     {
