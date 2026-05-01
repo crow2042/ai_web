@@ -8,15 +8,21 @@
   </head>
   <body>
     <header class="topbar">
-      <div>
+      <div class="topbar-left">
+        <a class="back-link" href="/" title="返回功能大厅">← 返回</a>
         <strong>AI 生图工作台</strong>
       </div>
       <div class="topbar-actions">
         <a class="nav-link" href="/">功能大厅</a>
-        <a class="nav-link" href="/prompt.html">Prompt 优化器</a>
-        <button class="icon-button" id="settingsBtn" title="管理员配置" aria-label="管理员配置">⚙</button>
+        <button class="primary compact" id="topbarLoginBtn">登录</button>
+        <button class="icon-button hidden" id="settingsBtn" title="管理员配置" aria-label="管理员配置">⚙</button>
       </div>
     </header>
+
+    <div class="login-banner hidden" id="loginBanner">
+      <span>登录后即可使用全部功能</span>
+      <button class="primary" id="bannerLoginBtn">立即登录</button>
+    </div>
 
     <main class="workspace">
       <section class="generator">
@@ -261,6 +267,11 @@
         <button class="icon-button" id="closePreviewBtn" aria-label="关闭">×</button>
       </div>
       <div id="previewGrid" class="preview-grid"></div>
+    </dialog>
+
+    <dialog id="loginFailDialog" class="login-fail-dialog">
+      <p>登录失败</p>
+      <button class="primary" id="closeLoginFailBtn">确定</button>
     </dialog>
 
     <script src="/app.js?v=feishu-admin-1"></script>

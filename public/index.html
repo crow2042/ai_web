@@ -14,6 +14,11 @@
   </head>
   <body>
     <main class="hall-shell">
+      <div class="login-banner hidden" id="loginBanner">
+        <span>登录后即可使用全部功能</span>
+        <button class="primary" id="bannerLoginBtn">立即登录</button>
+      </div>
+
       <section class="hall-hero">
         <p class="eyebrow">CREATIVE TOOL HALL</p>
         <h1>功能大厅</h1>
@@ -44,5 +49,44 @@
         </a>
       </section>
     </main>
+
+    <dialog id="loginFailDialog" class="login-fail-dialog">
+      <p>登录失败</p>
+      <button class="primary" id="closeLoginFailBtn">确定</button>
+    </dialog>
+
+    <script>
+      (async function () {
+        try {
+          const session = await fetch("/api/admin/session").then(function (r) { return r.json(); });
+          if (!session.authed) {
+            document.getElementById("loginBanner").classList.remove("hidden");
+          }
+        } catch (_) {
+          document.getElementById("loginBanner").classList.remove("hidden");
+        }
+
+        async function beginLogin() {
+          try {
+            var res = await fetch("/api/admin/feishu/login?returnTo=" + encodeURIComponent("/"));
+            var data = await res.json();
+            if (!res.ok || !data || !data.url) {
+              document.getElementById("loginFailDialog").querySelector("p").textContent = data.error || "登录失败";
+              document.getElementById("loginFailDialog").showModal();
+              return;
+            }
+            window.location.href = data.url;
+          } catch (_) {
+            document.getElementById("loginFailDialog").querySelector("p").textContent = "登录失败";
+            document.getElementById("loginFailDialog").showModal();
+          }
+        }
+
+        document.getElementById("bannerLoginBtn").addEventListener("click", beginLogin);
+        document.getElementById("closeLoginFailBtn").addEventListener("click", function () {
+          document.getElementById("loginFailDialog").close();
+        });
+      })();
+    </script>
   </body>
 </html>

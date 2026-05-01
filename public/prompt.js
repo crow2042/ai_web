@@ -71,6 +71,9 @@
   const recordDialog = $("promptRecordDialog");
   const recordDialogTitle = $("promptRecordDialogTitle");
   const recordDetail = $("promptRecordDetail");
+  const topbarLoginBtn = $("topbarLoginBtn");
+  const loginFailDialog = $("loginFailDialog");
+  const closeLoginFailBtn = $("closeLoginFailBtn");
 
   function lines(value) {
     return String(value || "")
@@ -119,6 +122,13 @@
   function showPromptAdminPanel() {
     loginForm.classList.add("hidden");
     adminPanel.classList.remove("hidden");
+  }
+
+  function syncTopbarLoginState() {
+    const loggedIn = Boolean(state.loggedIn);
+    topbarLoginBtn.classList.toggle("hidden", loggedIn);
+    settingsBtn.classList.toggle("hidden", !loggedIn);
+    $("loginBanner").classList.toggle("hidden", loggedIn);
   }
 
   function renderCurrentAdmin() {
@@ -320,17 +330,13 @@
     try {
       const data = await apiFetch("/api/llm-models", { headers: {} });
       state.llmModels = data.models || [];
-      llmModelSelect.innerHTML = "";
       if (!state.llmModels.length) {
         llmModelSelect.innerHTML = `<option value="">请先在右上角齿轮配置 LLM API</option>`;
         return;
       }
-      state.llmModels.forEach((model) => {
-        const option = document.createElement("option");
-        option.value = model.id;
-        option.textContent = `${model.name}（${model.model}）`;
-        llmModelSelect.appendChild(option);
-      });
+      llmModelSelect.innerHTML = state.llmModels.map((model) =>
+        `<option value="${model.id}">${model.name}（${model.model}）</option>`
+      ).join("");
     } catch (error) {
       llmModelSelect.innerHTML = `<option value="">模型列表加载失败</option>`;
       resultSummary.textContent = error.message;
@@ -627,9 +633,19 @@
   }
 
   async function beginFeishuLogin() {
-    loginStatus.textContent = "正在跳转到飞书登录...";
-    const data = await apiFetch("/api/admin/feishu/login?returnTo=" + encodeURIComponent("/prompt.html"));
-    window.location.href = data.url;
+    try {
+      const res = await fetch("/api/admin/feishu/login?returnTo=" + encodeURIComponent("/prompt.html"));
+      const data = await res.json();
+      if (!res.ok || !data || !data.url) {
+        loginFailDialog.querySelector("p").textContent = data?.error || "登录失败";
+        loginFailDialog.showModal();
+        return;
+      }
+      window.location.href = data.url;
+    } catch {
+      loginFailDialog.querySelector("p").textContent = "登录失败";
+      loginFailDialog.showModal();
+    }
   }
 
   async function logoutAdmin() {
@@ -642,6 +658,7 @@
     generateBtn.title = "请先登录飞书~";
     showPromptLogin();
     loginStatus.textContent = "已退出管理员登录。";
+    syncTopbarLoginState();
   }
 
   async function saveFeishuConfig(event) {
@@ -698,7 +715,8 @@
     window.history.replaceState({}, document.title, cleanUrl);
     if (error) {
       showPromptLogin();
-      loginStatus.textContent = error;
+      loginFailDialog.querySelector("p").textContent = error;
+      loginFailDialog.showModal();
       return;
     }
     try {
@@ -706,9 +724,11 @@
       if (session.authed) {
         rememberAdminSession();
         state.currentAdmin = session.adminUser || null;
+        state.loggedIn = true;
         showPromptAdminPanel();
         renderCurrentAdmin();
         syncAdminVisibility();
+        syncTopbarLoginState();
         loginStatus.textContent = "";
         if (state.currentAdmin?.isAdmin || state.currentAdmin?.isSuperAdmin) {
           await loadAdminConfig();
@@ -739,27 +759,24 @@
       generateBtn.disabled = false;
       generateBtn.title = "";
     }
+    syncTopbarLoginState();
   }
 
   function renderLlmApiList() {
-    llmApiList.innerHTML = "";
     if (!state.llmApis.length) {
       llmApiList.innerHTML = `<p class="empty-text">还没有配置 LLM 模型。</p>`;
       return;
     }
-    state.llmApis.forEach((api) => {
-      const item = document.createElement("div");
-      item.className = "api-item";
-      item.innerHTML = `
+    llmApiList.innerHTML = state.llmApis.map((api) => `
+      <div class="api-item">
         <div>
           <strong>${api.name}</strong>
           <span>${api.model} · ${api.enabled === false ? "停用" : "启用"}</span>
         </div>
         <button type="button" class="compact" data-edit="${api.id}">编辑</button>
         <button type="button" class="compact danger" data-delete="${api.id}">删除</button>
-      `;
-      llmApiList.appendChild(item);
-    });
+      </div>
+    `).join("");
   }
 
   function fillLlmForm(api = null) {
@@ -871,7 +888,7 @@
       list.innerHTML = `<p class="empty-text">暂无 Prompt 优化记录。</p>`;
       return;
     }
-    list.innerHTML = "";
+    const fragment = document.createDocumentFragment();
     sorted.slice(0, 80).forEach((record) => {
       const item = document.createElement("div");
       item.className = "record-item prompt-record-item";
@@ -902,8 +919,10 @@
         buttons[0].addEventListener("click", () => showPromptRecordInput(record));
         buttons[1].addEventListener("click", () => showPromptRecordOutput(record));
       }
-      list.appendChild(item);
+      fragment.appendChild(item);
     });
+    list.innerHTML = "";
+    list.appendChild(fragment);
   }
 
   function detailCard(title, content) {
@@ -989,8 +1008,10 @@
       }
     } catch (error) {
       forgetAdminSession();
+      state.loggedIn = false;
       showPromptLogin();
       loginStatus.textContent = error.message;
+      syncTopbarLoginState();
     }
   });
   closeAdminBtn.addEventListener("click", () => adminDialog.close());
@@ -1029,6 +1050,9 @@
     }
   });
 
+  topbarLoginBtn.addEventListener("click", beginFeishuLogin);
+  $("bannerLoginBtn").addEventListener("click", beginFeishuLogin);
+  closeLoginFailBtn.addEventListener("click", () => loginFailDialog.close());
   feishuLoginBtn.addEventListener("click", beginFeishuLogin);
   adminLogoutBtn.addEventListener("click", logoutAdmin);
   feishuConfigForm.addEventListener("submit", saveFeishuConfig);

@@ -117,26 +117,20 @@ function renderModelOptions() {
   state.models = state.allModels.filter((model) => getApiModes(model).includes(state.requestMode));
   const select = $("modelSelect");
   const currentValue = select.value;
-  select.innerHTML = "";
 
   if (!state.models.length) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = state.requestMode === "edit"
+    const label = state.requestMode === "edit"
       ? "当前没有可用于 edit 改图的模型，请在管理员中配置"
       : "当前没有可用于 generation 生图的模型，请联系管理员配置";
-    select.append(option);
+    select.innerHTML = `<option value="">${label}</option>`;
     $("generateBtn").disabled = true;
     $("modelHint").textContent = "未配置当前模式的模型";
     return;
   }
 
-  state.models.forEach((model) => {
-    const option = document.createElement("option");
-    option.value = model.id;
-    option.textContent = `${model.name} (${model.model})`;
-    select.append(option);
-  });
+  select.innerHTML = state.models.map((model) =>
+    `<option value="${model.id}">${model.name} (${model.model})</option>`
+  ).join("");
   select.value = state.models.some((model) => model.id === currentValue) ? currentValue : state.models[0].id;
   $("generateBtn").disabled = false;
   updateModelHint();
@@ -448,6 +442,13 @@ function triggerBlobDownload(href, name) {
   link.remove();
 }
 
+function syncTopbarLoginState() {
+  const loggedIn = Boolean(state.loggedIn);
+  $("topbarLoginBtn").classList.toggle("hidden", loggedIn);
+  $("settingsBtn").classList.toggle("hidden", !loggedIn);
+  $("loginBanner").classList.toggle("hidden", loggedIn);
+}
+
 async function fetchVisitorFromSession() {
   try {
     const session = await request("/api/admin/session");
@@ -465,6 +466,7 @@ async function fetchVisitorFromSession() {
     btn.disabled = false;
     btn.title = "";
   }
+  syncTopbarLoginState();
 }
 
 async function openAdmin() {
@@ -536,6 +538,7 @@ async function loginAdmin(event) {
     $("generateBtn").title = "";
     showAdminPanel();
     setStatus("loginStatus", "");
+    syncTopbarLoginState();
     loadAdminConfig().catch((error) => {
       sessionStorage.removeItem(adminSessionKey);
       showAdminLogin();
@@ -554,9 +557,19 @@ async function loadAdminMeta() {
 }
 
 async function beginFeishuLogin() {
-  setStatus("loginStatus", "正在跳转到飞书登录...");
-  const data = await request("/api/admin/feishu/login?returnTo=" + encodeURIComponent("/image.html"));
-  window.location.href = data.url;
+  try {
+    const res = await fetch("/api/admin/feishu/login?returnTo=" + encodeURIComponent("/image.html"));
+    const data = await res.json();
+    if (!res.ok || !data || !data.url) {
+      $("loginFailDialog").querySelector("p").textContent = data?.error || "登录失败";
+      $("loginFailDialog").showModal();
+      return;
+    }
+    window.location.href = data.url;
+  } catch {
+    $("loginFailDialog").querySelector("p").textContent = "登录失败";
+    $("loginFailDialog").showModal();
+  }
 }
 
 async function logoutAdmin() {
@@ -569,6 +582,7 @@ async function logoutAdmin() {
   $("generateBtn").title = "请先登录飞书~";
   showAdminLogin();
   setStatus("loginStatus", "已退出管理员登录。");
+  syncTopbarLoginState();
 }
 
 async function saveFeishuConfig(event) {
@@ -637,6 +651,7 @@ async function checkAdminSessionAfterRedirect() {
       showAdminPanel();
       renderCurrentAdmin();
       syncAdminVisibility();
+      syncTopbarLoginState();
       setStatus("loginStatus", "");
       $("adminDialog").showModal();
       if (state.currentAdmin?.isAdmin || state.currentAdmin?.isSuperAdmin) {
@@ -1171,6 +1186,9 @@ $("uploadZone").addEventListener("drop", (event) => {
   handleReferenceFiles(event.dataTransfer.files);
 });
 
+$("topbarLoginBtn").addEventListener("click", beginFeishuLogin);
+$("bannerLoginBtn").addEventListener("click", beginFeishuLogin);
+$("closeLoginFailBtn").addEventListener("click", () => $("loginFailDialog").close());
 $("settingsBtn").addEventListener("click", openAdmin);
 $("closeAdminBtn").addEventListener("click", () => $("adminDialog").close());
 $("loginForm").addEventListener("submit", loginAdmin);

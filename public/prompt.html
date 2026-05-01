@@ -8,15 +8,21 @@
   </head>
   <body>
     <header class="prompt-topbar">
-      <div>
+      <div class="topbar-left">
+        <a class="back-link" href="/" title="返回功能大厅">← 返回</a>
         <strong>Prompt 优化器</strong>
       </div>
       <nav>
         <a href="/">功能大厅</a>
-        <a href="/image.html">生图工作台</a>
-        <button id="promptSettingsBtn" class="icon-button" type="button" title="管理员设置" aria-label="管理员设置">⚙</button>
+        <button class="primary compact" id="topbarLoginBtn">登录</button>
+        <button id="promptSettingsBtn" class="icon-button hidden" type="button" title="管理员设置" aria-label="管理员设置">⚙</button>
       </nav>
     </header>
+
+    <div class="login-banner hidden" id="loginBanner">
+      <span>登录后即可使用全部功能</span>
+      <button class="primary" id="bannerLoginBtn">立即登录</button>
+    </div>
 
     <main class="prompt-shell">
       <section class="prompt-hero">
@@ -240,6 +246,11 @@
         <button id="closePromptRecordBtn" class="icon-button" type="button" aria-label="关闭">×</button>
       </div>
       <div id="promptRecordDetail" class="record-detail"></div>
+    </dialog>
+
+    <dialog id="loginFailDialog" class="login-fail-dialog">
+      <p>登录失败</p>
+      <button class="primary" id="closeLoginFailBtn">确定</button>
     </dialog>
 
     <script src="/prompt.js?v=feishu-admin-3"></script>
