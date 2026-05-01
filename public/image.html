@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AI 生图工作台</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=merge-1" />
   </head>
   <body>
     <header class="topbar">
@@ -26,22 +26,23 @@
 
     <main class="workspace">
       <section class="generator">
-        <div class="section-title">
-          <h2>生成图片</h2>
-          <span>支持多人并发提交，后台自动记录生成者与结果。</span>
+        <div class="section-title stack">
+          <h2>Prompt 生成</h2>
+          <span>选择 LLM 模型与任务模式，模型会按规则输出可直接用于生图的 Prompt。</span>
         </div>
 
-        <div class="mode-stack">
-          <div class="switch-block">
-            <div class="switch-row">
-              <span class="switch-label">生图模式</span>
-              <div class="segmented-switch slider-switch mode-switch" id="requestModeSwitch">
-                <span class="switch-track" aria-hidden="true"></span>
-                <span class="switch-thumb" aria-hidden="true"></span>
-                <span class="switch-shadow" aria-hidden="true"></span>
-                <button id="generationModeBtn" class="switch-btn is-active" type="button" data-mode="generation">generation 生图</button>
-                <button id="editModeBtn" class="switch-btn" type="button" data-mode="edit">edit 改图</button>
-              </div>
+        <div class="left-params">
+          <label class="field">
+            <span>LLM 模型</span>
+            <select id="llmModelSelect"></select>
+          </label>
+
+          <div class="switch-block stack">
+            <span class="switch-label">任务模式</span>
+            <div class="segmented-switch task-mode-switch" id="taskModeSwitch">
+              <button id="editTaskBtn" class="switch-btn is-active" type="button" data-mode="edit">改图</button>
+              <button id="referenceTaskBtn" class="switch-btn" type="button" data-mode="reference">参考图生图</button>
+              <button id="textTaskBtn" class="switch-btn" type="button" data-mode="text">纯文生图</button>
             </div>
           </div>
         </div>
@@ -54,16 +55,27 @@
           <label class="upload-zone" id="uploadZone">
             <input id="referenceInput" type="file" accept="image/*" multiple />
             <strong>选择或拖入参考图</strong>
-            <em>支持多选，缩略图会按“参考图 1 / 2 / 3”编号。</em>
+            <em class="upload-note" id="referenceNote">改图模式下，请先上传至少一张原图。</em>
           </label>
           <div class="reference-thumbs" id="referenceThumbs"></div>
-          <span class="field-note" id="referenceNote">可选，可在 prompt 中描述“参考图 1”的主体或“参考图 2”的风格。</span>
         </div>
+
+        <label class="field">
+          <span>需求描述</span>
+          <textarea id="descriptionInput" rows="5" placeholder="仅需描述需求，大语言模型会补充提示词"></textarea>
+        </label>
+
+        <div class="optimizer-actions">
+          <button id="optimizePromptBtn" class="primary compact" type="button">调用模型优化 Prompt</button>
+          <button id="clearOptimizerBtn" class="compact" type="button">清空</button>
+        </div>
+
+        <p class="status" id="optimizeStatus"></p>
 
         <div class="prompt-field">
           <div class="prompt-head">
-            <span>Prompt 输入</span>
-            <div class="segmented-switch slider-switch compact-switch" id="promptFormatSwitch">
+            <span>Prompt</span>
+            <div class="segmented-switch slider-switch compact-switch" id="promptFormatSwitch" hidden>
               <span class="switch-track" aria-hidden="true"></span>
               <span class="switch-thumb" aria-hidden="true"></span>
               <span class="switch-shadow" aria-hidden="true"></span>
@@ -71,18 +83,21 @@
               <button id="jsonPromptBtn" class="switch-btn" type="button" data-format="json">JSON</button>
             </div>
           </div>
-          <textarea id="promptInput" rows="7" placeholder="描述你想生成的画面、风格、光线、构图等"></textarea>
+          <textarea id="promptInput" rows="8" placeholder="点击「调用模型优化 Prompt」后，结果会自动填入这里；也可手动编辑。"></textarea>
         </div>
-        <button id="jumpToPromptBtn" class="prompt-helper-btn" type="button">不知道怎么描述prompt？点击跳转进行优化</button>
+      </section>
 
-        <div class="model-row">
+      <section class="output">
+        <div class="section-title">
+          <h2>图片输出</h2>
+          <span id="modelHint">等待选择模型</span>
+        </div>
+
+        <div class="control-grid right-controls">
           <label>
             生图模型
             <select id="modelSelect"></select>
           </label>
-        </div>
-
-        <div class="control-grid">
           <label>
             图片比例
             <select id="aspectSelect">
@@ -107,19 +122,20 @@
               <option>9</option>
             </select>
           </label>
+          <label>
+            Quality
+            <select id="qualitySelect">
+              <option value="high" selected>high</option>
+              <option value="low">low</option>
+            </select>
+          </label>
           <div class="inline-action">
             <button id="generateBtn" class="primary" type="button">生成图片</button>
           </div>
         </div>
 
         <p class="status" id="statusText"></p>
-      </section>
 
-      <section class="output">
-        <div class="section-title">
-          <h2>图片输出</h2>
-          <span id="modelHint">等待选择模型</span>
-        </div>
         <div class="output-actions">
           <button id="downloadAllBtn" class="compact" type="button" disabled>全部下载</button>
         </div>
@@ -147,7 +163,7 @@
 
       <form id="loginForm" class="admin-card">
         <h3>飞书登录</h3>
-        <p>登录后可使用 AI 生图工作台和 Prompt 优化器；管理员会看到额外管理功能。</p>
+        <p>登录后可使用 AI 生图工作台；管理员会看到额外管理功能。</p>
         <div id="legacyLoginFields" class="admin-grid">
           <label>账号<input id="adminUser" value="admin" autocomplete="username" /></label>
           <label>密码<input id="adminPass" type="password" autocomplete="current-password" /></label>
@@ -202,9 +218,10 @@
           </form>
           <div id="adminUsersList" class="api-list"></div>
         </section>
+
         <div class="admin-card">
           <div class="card-head">
-            <h3>API / 模型管理</h3>
+            <h3>生图 API / 模型管理</h3>
             <button id="newApiBtn" class="compact" type="button">新增模型</button>
           </div>
           <div id="apiList" class="api-list"></div>
@@ -228,6 +245,29 @@
           </div>
           <button type="submit" class="primary compact">保存模型</button>
           <p class="status" id="apiStatus"></p>
+        </form>
+
+        <div class="admin-card">
+          <div class="card-head">
+            <h3>LLM API / 模型管理</h3>
+            <button id="newLlmApiBtn" class="compact" type="button">新增模型</button>
+          </div>
+          <div id="llmApiList" class="api-list"></div>
+        </div>
+
+        <form id="llmApiForm" class="admin-card hidden">
+          <h3 id="llmApiFormTitle">新增 LLM 模型</h3>
+          <input id="llmApiId" type="hidden" />
+          <div class="admin-grid">
+            <label>显示名称<input id="llmApiName" placeholder="例如：GPT-4o / Gemini Vision" /></label>
+            <label>模型 ID<input id="llmApiModel" placeholder="例如：gpt-4o / gpt-4.1" /></label>
+            <label>API 地址<input id="llmApiEndpoint" placeholder="例如：https://api.openai.com/v1" /></label>
+            <label>API Key<input id="llmApiKey" type="password" placeholder="保存后会隐藏" /></label>
+            <label>温度<input id="llmApiTemperature" type="number" min="0" max="2" step="0.1" value="0.4" /></label>
+            <label class="check-row"><input id="llmApiEnabled" type="checkbox" checked /> 启用</label>
+          </div>
+          <button type="submit" class="primary compact">保存 LLM 模型</button>
+          <p class="status" id="llmApiStatus"></p>
         </form>
 
         <div class="admin-card">
@@ -274,6 +314,6 @@
       <button class="primary" id="closeLoginFailBtn">确定</button>
     </dialog>
 
-    <script src="/app.js?v=feishu-admin-1"></script>
+    <script src="/app.js?v=merge-1"></script>
   </body>
 </html>

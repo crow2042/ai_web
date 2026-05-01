@@ -75,6 +75,11 @@ body::before {
   gap: 22px;
 }
 
+.tool-grid.single {
+  grid-template-columns: minmax(0, 520px);
+  justify-content: center;
+}
+
 .tool-card {
   display: grid;
   grid-template-rows: auto 1fr auto;

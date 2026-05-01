@@ -1,20 +1,23 @@
 const state = {
   visitor: "",
   clientId: getClientId(),
+  loggedIn: false,
   allModels: [],
   models: [],
+  llmModels: [],
   editingApi: null,
+  editingLlmApi: null,
   references: [],
   canClearReferences: false,
   lastImages: [],
   records: [],
   userRecords: [],
-  requestMode: "generation",
-  promptFormat: "plain",
-  promptDrafts: {
-    plain: "",
-    json: ""
-  },
+  taskMode: "edit",
+  quality: "high",
+  lastGeneratedPrompt: "",
+  lastGeneratedJson: "",
+  lastGeneratedMode: "",
+  outputView: "plain",
   adminUsers: [],
   feishuAuth: null,
   currentAdmin: null
@@ -27,10 +30,6 @@ if (navType === "reload") {
 }
 
 const $ = (id) => document.getElementById(id);
-const promptPlaceholders = {
-  plain: "描述你想生成的画面、风格、光线、构图等",
-  json: "此处粘贴json字段，将转为合适的请求格式发送至模型"
-};
 
 function getClientId() {
   let id = localStorage.getItem("clientId");
@@ -45,6 +44,7 @@ function getClientId() {
 
 function setStatus(id, message, isError = false) {
   const node = $(id);
+  if (!node) return;
   node.textContent = message || "";
   node.style.color = isError ? "#c93636" : "#647084";
 }
@@ -107,59 +107,78 @@ function readFileAsDataUrl(file) {
   });
 }
 
+function getImageRequestMode(taskMode) {
+  return taskMode === "text" ? "generation" : "edit";
+}
+
 async function loadModels() {
   const data = await request("/api/models");
   state.allModels = data.models || [];
   renderModelOptions();
 }
 
+async function loadLlmModels() {
+  try {
+    const data = await request("/api/llm-models");
+    state.llmModels = data.models || [];
+    renderLlmModelOptions();
+  } catch (error) {
+    state.llmModels = [];
+    $("llmModelSelect").innerHTML = `<option value="">LLM 模型加载失败</option>`;
+    setStatus("optimizeStatus", error.message, true);
+  }
+}
+
+function renderLlmModelOptions() {
+  const select = $("llmModelSelect");
+  if (!state.llmModels.length) {
+    select.innerHTML = `<option value="">请在管理员配置中添加 LLM API</option>`;
+    return;
+  }
+  const current = select.value;
+  select.innerHTML = state.llmModels.map((model) =>
+    `<option value="${model.id}">${escapeHtml(model.name)}（${escapeHtml(model.model)}）</option>`
+  ).join("");
+  select.value = state.llmModels.some((m) => m.id === current) ? current : state.llmModels[0].id;
+}
+
 function renderModelOptions() {
-  state.models = state.allModels.filter((model) => getApiModes(model).includes(state.requestMode));
+  const targetMode = getImageRequestMode(state.taskMode);
+  state.models = state.allModels.filter((model) => getApiModes(model).includes(targetMode));
   const select = $("modelSelect");
   const currentValue = select.value;
 
   if (!state.models.length) {
-    const label = state.requestMode === "edit"
-      ? "当前没有可用于 edit 改图的模型，请在管理员中配置"
-      : "当前没有可用于 generation 生图的模型，请联系管理员配置";
+    const label = targetMode === "edit"
+      ? "当前没有可用于 edit 改图/参考图生图的模型，请在管理员中配置"
+      : "当前没有可用于 generation 纯文生图的模型，请联系管理员配置";
     select.innerHTML = `<option value="">${label}</option>`;
     $("generateBtn").disabled = true;
-    $("modelHint").textContent = "未配置当前模式的模型";
+    $("modelHint").textContent = "未配置当前任务模式的模型";
     return;
   }
 
   select.innerHTML = state.models.map((model) =>
-    `<option value="${model.id}">${model.name} (${model.model})</option>`
+    `<option value="${model.id}">${escapeHtml(model.name)} (${escapeHtml(model.model)})</option>`
   ).join("");
   select.value = state.models.some((model) => model.id === currentValue) ? currentValue : state.models[0].id;
-  $("generateBtn").disabled = false;
+  $("generateBtn").disabled = !state.loggedIn;
   updateModelHint();
 }
 
 function updateModelHint() {
   const selected = state.models.find((model) => model.id === $("modelSelect").value);
+  const taskLabel = taskModeLabel(state.taskMode);
   $("modelHint").textContent = selected
-    ? `当前模型：${selected.name} · ${selected.size} · ${state.requestMode === "edit" ? "edit 改图" : "generation 生图"}`
+    ? `当前模型：${selected.name} · ${selected.size} · ${taskLabel}`
     : "等待选择模型";
 }
 
-function inferRequestMode(api) {
-  const modes = getApiModes(api);
-  if (modes.length === 1) {
-    return modes[0];
-  }
-  if (modes.includes("generation")) {
-    return "generation";
-  }
-  if (api?.requestMode === "edit" || api?.requestMode === "generation") {
-    return api.requestMode;
-  }
-  const endpointText = String(api?.endpoint || "");
-  if (/\/images?\/(edit|edits)\/?$/i.test(endpointText)) return "edit";
-  const nameText = `${api?.name || ""} ${api?.model || ""}`.toLowerCase();
-  if (/\bedit\b/.test(nameText) || /-edit\b/.test(nameText)) return "edit";
-  if (/\bgeneration\b/.test(nameText) || /\bgenerations\b/.test(nameText) || /-generations\b/.test(nameText)) return "generation";
-  return "generation";
+function taskModeLabel(mode) {
+  if (mode === "edit") return "改图";
+  if (mode === "reference") return "参考图生图";
+  if (mode === "text") return "纯文生图";
+  return mode;
 }
 
 function getApiModes(api) {
@@ -191,101 +210,279 @@ function getSelectedAspect() {
   return $("aspectSelect").value || "16:9 横向宽银幕构图";
 }
 
-function syncPromptDraft() {
-  state.promptDrafts[state.promptFormat] = $("promptInput").value;
+function aspectShort(aspect) {
+  const match = String(aspect || "").match(/^(\d+:\d+)/);
+  return match ? match[1] : "16:9";
 }
 
-function renderPromptInput() {
-  const input = $("promptInput");
-  input.value = state.promptDrafts[state.promptFormat] || "";
-  input.placeholder = promptPlaceholders[state.promptFormat];
-  $("plainPromptBtn").classList.toggle("is-active", state.promptFormat === "plain");
-  $("jsonPromptBtn").classList.toggle("is-active", state.promptFormat === "json");
-  $("promptFormatSwitch").classList.toggle("is-second-active", state.promptFormat === "json");
-}
-
-function setPromptFormat(format) {
-  if (!["plain", "json"].includes(format) || format === state.promptFormat) return;
-  syncPromptDraft();
-  state.promptFormat = format;
-  renderPromptInput();
-}
-
-function setRequestMode(mode) {
-  if (!["generation", "edit"].includes(mode) || mode === state.requestMode) return;
-  state.requestMode = mode;
-  $("generationModeBtn").classList.toggle("is-active", mode === "generation");
-  $("editModeBtn").classList.toggle("is-active", mode === "edit");
-  $("requestModeSwitch").classList.toggle("is-second-active", mode === "edit");
-  $("referenceNote").textContent = mode === "edit"
-    ? "edit 改图模式下，请先上传至少一张原图或参考图。"
-    : (state.references.length
-      ? `已选择 ${state.references.length} 张参考图，可在 prompt 中按编号描述。`
-      : '可选，可在 prompt 中描述"参考图 1"的主体或"参考图 2"的风格。');
+function setTaskMode(mode) {
+  if (!["edit", "reference", "text"].includes(mode) || mode === state.taskMode) return;
+  state.taskMode = mode;
+  $("editTaskBtn").classList.toggle("is-active", mode === "edit");
+  $("referenceTaskBtn").classList.toggle("is-active", mode === "reference");
+  $("textTaskBtn").classList.toggle("is-active", mode === "text");
+  updateReferenceNote();
   renderModelOptions();
 }
 
-function listText(value) {
-  if (!Array.isArray(value)) return [];
-  return value.map((item) => String(item || "").trim()).filter(Boolean);
+function updateReferenceNote() {
+  const note = $("referenceNote");
+  if (state.taskMode === "text") {
+    note.textContent = "纯文生图模式不会使用参考图。";
+    return;
+  }
+  if (state.taskMode === "edit") {
+    note.textContent = state.references.length
+      ? `已选择 ${state.references.length} 张参考图，将用于改图。`
+      : "改图模式下，请先上传至少一张原图。";
+    return;
+  }
+  note.textContent = state.references.length
+    ? `已选择 ${state.references.length} 张参考图，可在 prompt 中按编号描述。`
+    : "参考图生图模式下，请上传至少一张参考图。";
 }
 
-function normalizePromptFromJson(rawText, aspect) {
-  let payload;
-  try {
-    payload = JSON.parse(rawText);
-  } catch {
-    throw new Error("JSON 输入格式无效，请先检查字段和逗号。");
-  }
+// === Prompt JSON 构造（自 prompt.js 移植） ===
 
-  const parts = [];
-  if (payload.plain_prompt) {
-    parts.push(String(payload.plain_prompt).trim());
-  } else if (payload.task === "image_edit") {
-    parts.push(`基于上传的原图进行修改，目标：${payload.goal || payload.edit_area?.target || "按要求调整"}。`);
-    const keep = listText(payload.keep_unchanged);
-    if (keep.length) parts.push(`保持以下内容不变：${keep.join("、")}。`);
-    if (payload.edit_area?.target) parts.push(`重点修改区域：${payload.edit_area.target}。`);
-    const repair = listText(payload.repair_instruction?.fill_with);
-    if (repair.length) parts.push(`修改后请自然补齐并保持：${repair.join("、")}。`);
-    const negative = listText(payload.negative_prompt);
-    if (negative.length) parts.push(`避免：${negative.join("、")}。`);
-  } else {
-    if (payload.generate_target?.subject) parts.push(`生成主体：${payload.generate_target.subject}。`);
-    if (payload.generate_target?.theme) parts.push(`主题方向：${payload.generate_target.theme}。`);
-    const features = listText(payload.design_requirements?.features);
-    if (features.length) parts.push(`关键设计点：${features.join("、")}。`);
-    const negative = listText(payload.negative_prompt);
-    if (negative.length) parts.push(`避免：${negative.join("、")}。`);
-  }
-
-  if (!parts.length) {
-    parts.push(rawText);
-  }
-
-  const merged = parts.join("\n");
-  return merged.includes("画面比例要求")
-    ? merged
-    : `${merged}\n\n画面比例要求：${aspect}。`;
+function lines(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
-function getPromptPayload(aspect) {
-  const rawPrompt = $("promptInput").value.trim();
-  if (!rawPrompt) {
-    throw new Error(state.promptFormat === "json" ? "请先粘贴 JSON 字段。" : "请先填写 prompt。");
-  }
+function splitPromptParts(value) {
+  return String(value || "")
+    .split(/[\n，。；;、,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
 
-  if (state.promptFormat === "json") {
+function normalizedList(values, fallback = []) {
+  const list = (Array.isArray(values) ? values : [values])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  return list.length ? list : fallback;
+}
+
+function uniqueList(values) {
+  return [...new Set((values || []).map((item) => String(item || "").trim()).filter(Boolean))];
+}
+
+function toFeatureList(descriptionParts, preserve, limit = 4) {
+  return uniqueList([...preserve, ...descriptionParts]).slice(0, limit);
+}
+
+function buildPromptJson(input, plainPrompt) {
+  const descriptionParts = splitPromptParts(input?.description || plainPrompt);
+  const promptParts = splitPromptParts(plainPrompt);
+  const preserve = input?.mode === "edit"
+    ? ["主体轮廓不变", "整体构图不变", "原有风格不变"]
+    : ["主体识别度高", "构图完整"];
+  const negative = ["不要文字", "不要复杂背景", "不要偏离主体"];
+  const styleList = [];
+  const aspectRatio = input?.aspectRatio || "16:9";
+
+  if (input?.mode === "edit") {
     return {
-      prompt: normalizePromptFromJson(rawPrompt, aspect),
-      originalPrompt: rawPrompt
+      task: "image_edit",
+      goal: input.description || plainPrompt || "根据需求修改原图",
+      keep_unchanged: preserve,
+      edit_area: {
+        target: descriptionParts[0] || "用户指定区域",
+        action: "adjust"
+      },
+      repair_instruction: {
+        area: descriptionParts[0] || "被修改区域周围",
+        fill_with: ["自然延续的结构或材质", "连续光影", "与原图一致的风格"]
+      },
+      style_requirement: uniqueList([...styleList, "干净", "精致", "统一"]),
+      negative_prompt: negative,
+      plain_prompt: plainPrompt
+    };
+  }
+
+  if (input?.mode === "reference") {
+    return {
+      task: "image_generation_with_reference",
+      reference_usage: {
+        use_for: ["参考图的风格质感", "参考图的材质表现", "参考图的配色氛围", "参考图的完成度"],
+        do_not_copy: ["不要照抄参考图角色", "不要照抄参考图结构", "不要保留参考图中的具体装饰或文字"]
+      },
+      generate_target: {
+        subject: descriptionParts[0] || "根据需求生成新主体",
+        theme: promptParts[0] || "参考图延展设计",
+        core_shape: descriptionParts[1] || "主体轮廓清晰"
+      },
+      design_requirements: {
+        silhouette: preserve,
+        features: toFeatureList(descriptionParts, preserve),
+        expression_or_pose: descriptionParts[2] || input.description || plainPrompt,
+        materials: ["参考图质感延展"],
+        effects: uniqueList(promptParts.slice(0, 4))
+      },
+      color_palette: [],
+      composition: {
+        aspect_ratio: aspectRatio,
+        framing: "主体完整，构图饱满，视觉中心明确",
+        background: "背景简洁，不抢主体"
+      },
+      quality_requirements: ["高识别度", "高完成度", "干净精致", "游戏资源质感", "小图标可读性强"],
+      negative_prompt: negative,
+      plain_prompt: plainPrompt
     };
   }
 
   return {
-    prompt: `${rawPrompt}\n\n画面比例要求：${aspect}。`,
-    originalPrompt: rawPrompt
+    task: "image_generation",
+    generate_target: {
+      subject: descriptionParts[0] || "根据需求生成主体",
+      theme: promptParts[0] || "按需求生成",
+      core_shape: descriptionParts[1] || "主体轮廓清晰"
+    },
+    design_requirements: {
+      features: toFeatureList(descriptionParts, preserve),
+      materials: styleList,
+      effects: uniqueList(promptParts.slice(0, 4)),
+      expression_or_pose: descriptionParts[2] || input?.description || plainPrompt
+    },
+    composition: {
+      aspect_ratio: aspectRatio,
+      framing: "主体完整，构图饱满，视觉中心明确",
+      background: "背景简洁，不抢主体"
+    },
+    quality_requirements: ["高识别度", "高完成度", "干净精致"],
+    negative_prompt: negative,
+    plain_prompt: plainPrompt
   };
+}
+
+function getPromptText(cards) {
+  return (cards || [])
+    .map((card) => String(card.content || "").trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+}
+
+function plainOutputAvailable() {
+  return state.lastGeneratedMode !== "edit" && Boolean(state.lastGeneratedPrompt);
+}
+
+function jsonOutputAvailable() {
+  return state.lastGeneratedMode !== "text" && Boolean(state.lastGeneratedJson);
+}
+
+function currentOutputText() {
+  if (state.outputView === "json") return state.lastGeneratedJson || "";
+  return state.lastGeneratedPrompt || "";
+}
+
+function updatePromptFormatVisibility() {
+  const switcher = $("promptFormatSwitch");
+  const hasPlain = plainOutputAvailable();
+  const hasJson = jsonOutputAvailable();
+  const showSwitcher = hasPlain && hasJson;
+  switcher.hidden = !showSwitcher;
+  $("plainPromptBtn").classList.toggle("is-active", state.outputView === "plain");
+  $("jsonPromptBtn").classList.toggle("is-active", state.outputView === "json");
+  switcher.classList.toggle("is-second-active", state.outputView === "json");
+}
+
+function setOutputView(view) {
+  if (!["plain", "json"].includes(view) || view === state.outputView) return;
+  if (view === "plain" && !plainOutputAvailable()) return;
+  if (view === "json" && !jsonOutputAvailable()) return;
+  state.outputView = view;
+  $("promptInput").value = currentOutputText();
+  updatePromptFormatVisibility();
+}
+
+async function optimizePrompt() {
+  if (!state.loggedIn) {
+    setStatus("optimizeStatus", "请先登录飞书~", true);
+    return;
+  }
+  const modelId = $("llmModelSelect").value;
+  const description = $("descriptionInput").value.trim();
+  if (!modelId) {
+    setStatus("optimizeStatus", "请先选择 LLM 模型，或在管理员配置中添加。", true);
+    return;
+  }
+  if (!description) {
+    setStatus("optimizeStatus", "请先填写需求描述。", true);
+    return;
+  }
+  if ((state.taskMode === "edit" || state.taskMode === "reference") && !state.references.length) {
+    setStatus("optimizeStatus", "当前任务模式需要先上传参考图。", true);
+    return;
+  }
+
+  const optimizeBtn = $("optimizePromptBtn");
+  optimizeBtn.disabled = true;
+  optimizeBtn.textContent = "模型优化中...";
+  setStatus("optimizeStatus", "正在调用 LLM 读取图片和文本，请稍等。");
+
+  const imageDataUrls = state.references.map((item) => item.data);
+  const input = {
+    visitor: state.visitor,
+    clientId: state.clientId,
+    modelId,
+    mode: state.taskMode,
+    aspectRatio: aspectShort(getSelectedAspect()),
+    styleTone: "",
+    description,
+    preserve: [],
+    negative: [],
+    imageDataUrls,
+    imageDataUrl: imageDataUrls[0] || ""
+  };
+
+  try {
+    const data = await request("/api/prompt-orchestrator/generate", {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+    const cards = data.cards || [];
+    state.lastGeneratedMode = state.taskMode;
+    state.lastGeneratedPrompt = getPromptText(cards);
+    state.lastGeneratedJson = state.taskMode === "text"
+      ? ""
+      : (state.lastGeneratedPrompt
+        ? JSON.stringify(buildPromptJson(input, state.lastGeneratedPrompt), null, 2)
+        : "");
+    state.outputView = state.taskMode === "edit" ? "json" : "plain";
+    if (state.outputView === "json" && !jsonOutputAvailable()) state.outputView = "plain";
+    if (state.outputView === "plain" && !plainOutputAvailable()) state.outputView = "json";
+    $("promptInput").value = currentOutputText();
+    updatePromptFormatVisibility();
+    if (!state.lastGeneratedPrompt) {
+      setStatus("optimizeStatus", "模型未返回有效 Prompt。", true);
+    } else {
+      setStatus("optimizeStatus", "Prompt 已生成，可直接编辑或继续生图。");
+    }
+  } catch (error) {
+    setStatus("optimizeStatus", error.message, true);
+  } finally {
+    optimizeBtn.disabled = false;
+    optimizeBtn.textContent = "调用模型优化 Prompt";
+  }
+}
+
+function clearOptimizerInputs() {
+  $("descriptionInput").value = "";
+  $("promptInput").value = "";
+  state.lastGeneratedPrompt = "";
+  state.lastGeneratedJson = "";
+  state.lastGeneratedMode = "";
+  state.outputView = "plain";
+  state.references = [];
+  state.canClearReferences = false;
+  renderReferenceThumbs();
+  updateClearReferencesButton();
+  updateReferenceNote();
+  updatePromptFormatVisibility();
+  setStatus("optimizeStatus", "已清空 Prompt 和参考图。");
 }
 
 async function generateImage() {
@@ -296,22 +493,26 @@ async function generateImage() {
   const modelId = $("modelSelect").value;
   const aspect = getSelectedAspect();
   const count = Number($("countSelect").value);
+  const quality = $("qualitySelect").value || "high";
+  state.quality = quality;
   if (!modelId) {
     setStatus("statusText", "请先选择一个已配置的模型。", true);
     return;
   }
-  if (state.requestMode === "edit" && !state.references.length) {
-    setStatus("statusText", "edit 改图模式下，请先上传至少一张原图或参考图。", true);
+  const imageRequestMode = getImageRequestMode(state.taskMode);
+  if (imageRequestMode === "edit" && !state.references.length) {
+    setStatus("statusText", "当前任务模式下，请先上传至少一张参考图。", true);
+    return;
+  }
+  const rawPrompt = $("promptInput").value.trim();
+  if (!rawPrompt) {
+    setStatus("statusText", "请先生成或填写 Prompt。", true);
     return;
   }
 
-  let promptPayload;
-  try {
-    promptPayload = getPromptPayload(aspect);
-  } catch (error) {
-    setStatus("statusText", error.message, true);
-    return;
-  }
+  const promptToSend = rawPrompt.includes("画面比例要求")
+    ? rawPrompt
+    : `${rawPrompt}\n\n画面比例要求：${aspect}。`;
 
   $("generateBtn").disabled = true;
   $("imageBox").innerHTML = '<div class="placeholder">正在生成图片，请稍候...</div>';
@@ -324,12 +525,12 @@ async function generateImage() {
       body: JSON.stringify({
         visitor: state.visitor,
         clientId: state.clientId,
-        prompt: promptPayload.prompt,
-        originalPrompt: promptPayload.originalPrompt,
+        prompt: promptToSend,
+        originalPrompt: rawPrompt,
         aspect,
         count,
-        requestMode: state.requestMode,
-        promptFormat: state.promptFormat,
+        quality,
+        requestMode: imageRequestMode,
         reference: state.references.map((item) => item.data),
         referenceName: state.references.map((item) => item.name).join("、"),
         referencePreviews: state.references.map((item, index) => ({
@@ -345,14 +546,14 @@ async function generateImage() {
     state.canClearReferences = true;
     updateClearReferencesButton();
     await loadUserRecords();
-    state.userRecords = rememberLatestRecordMode(state.userRecords, state.requestMode);
+    state.userRecords = rememberLatestRecordMode(state.userRecords, imageRequestMode);
     renderRecords(state.userRecords, "userRecordsList");
     setStatus("statusText", `生成完成，共 ${state.lastImages.length} 张，记录已写入后台。`);
   } catch (error) {
     $("imageBox").innerHTML = '<div class="placeholder">生成失败，请检查模型配置或 API 返回。</div>';
     setStatus("statusText", error.message, true);
   } finally {
-    $("generateBtn").disabled = !state.models.length;
+    $("generateBtn").disabled = !state.models.length || !state.loggedIn;
   }
 }
 
@@ -447,6 +648,21 @@ function syncTopbarLoginState() {
   $("topbarLoginBtn").classList.toggle("hidden", loggedIn);
   $("settingsBtn").classList.toggle("hidden", !loggedIn);
   $("loginBanner").classList.toggle("hidden", loggedIn);
+  syncAuthGatedButtons();
+}
+
+function syncAuthGatedButtons() {
+  const loggedIn = Boolean(state.loggedIn);
+  const optimizeBtn = $("optimizePromptBtn");
+  const generateBtn = $("generateBtn");
+  if (optimizeBtn) {
+    optimizeBtn.disabled = !loggedIn;
+    optimizeBtn.title = loggedIn ? "" : "请先登录飞书~";
+  }
+  if (generateBtn) {
+    generateBtn.disabled = !loggedIn || !state.models.length;
+    generateBtn.title = loggedIn ? "" : "请先登录飞书~";
+  }
 }
 
 async function fetchVisitorFromSession() {
@@ -463,7 +679,7 @@ async function fetchVisitorFromSession() {
     btn.disabled = true;
     btn.title = "请先登录飞书~";
   } else {
-    btn.disabled = false;
+    btn.disabled = !state.models.length;
     btn.title = "";
   }
   syncTopbarLoginState();
@@ -475,6 +691,9 @@ async function openAdmin() {
   showAdminPanel();
   try {
     await loadAdminConfig();
+  } catch (_) {}
+  try {
+    await loadLlmAdminConfig();
   } catch (_) {}
   loadRecords().catch(() => {});
 }
@@ -534,7 +753,7 @@ async function loginAdmin(event) {
     sessionStorage.setItem(adminSessionKey, "1");
     state.loggedIn = true;
     state.visitor = $("adminUser").value.trim();
-    $("generateBtn").disabled = false;
+    $("generateBtn").disabled = !state.models.length;
     $("generateBtn").title = "";
     showAdminPanel();
     setStatus("loginStatus", "");
@@ -544,6 +763,7 @@ async function loginAdmin(event) {
       showAdminLogin();
       setStatus("loginStatus", error.message, true);
     });
+    loadLlmAdminConfig().catch(() => {});
     loadRecords().catch(() => {});
   } catch (error) {
     setStatus("loginStatus", error.message, true);
@@ -656,6 +876,7 @@ async function checkAdminSessionAfterRedirect() {
       $("adminDialog").showModal();
       if (state.currentAdmin?.isAdmin || state.currentAdmin?.isSuperAdmin) {
         await loadAdminConfig();
+        await loadLlmAdminConfig();
       }
     }
   } catch (sessionError) {
@@ -681,6 +902,108 @@ async function loadAdminConfig() {
   renderApis(data.apis || []);
   if (!$("recordsList").children.length) {
     $("recordsList").innerHTML = '<div class="placeholder">点击"刷新记录"加载管理员记录。</div>';
+  }
+}
+
+async function loadLlmAdminConfig() {
+  try {
+    const data = await request("/api/admin/llm-config");
+    renderLlmApis(data.llmApis || []);
+  } catch (error) {
+    setStatus("llmApiStatus", error.message, true);
+  }
+}
+
+function renderLlmApis(apis) {
+  const list = $("llmApiList");
+  list.innerHTML = "";
+  if (!apis.length) {
+    list.innerHTML = '<div class="placeholder">尚未配置 LLM 模型。新增后会立刻出现在 Prompt 优化的 LLM 模型选择框中。</div>';
+    return;
+  }
+  apis.forEach((api) => {
+    const item = document.createElement("div");
+    item.className = "api-item";
+    const info = document.createElement("div");
+    info.innerHTML = `<strong>${escapeHtml(api.name)}</strong><span>${escapeHtml(api.model)} · 温度 ${escapeHtml(String(api.temperature ?? 0.4))}${api.enabled === false ? " · 已停用" : ""}</span>`;
+
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "compact";
+    edit.textContent = "编辑";
+    edit.addEventListener("click", () => fillLlmApiForm(api));
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "compact danger";
+    del.textContent = "删除";
+    del.addEventListener("click", () => deleteLlmApi(api.id));
+
+    item.append(info, edit, del);
+    list.append(item);
+  });
+}
+
+function clearLlmApiForm() {
+  state.editingLlmApi = null;
+  $("llmApiForm").classList.remove("hidden");
+  $("llmApiFormTitle").textContent = "新增 LLM 模型";
+  $("llmApiId").value = "";
+  $("llmApiName").value = "";
+  $("llmApiModel").value = "";
+  $("llmApiEndpoint").value = "";
+  $("llmApiKey").value = "";
+  $("llmApiTemperature").value = "0.4";
+  $("llmApiEnabled").checked = true;
+  setStatus("llmApiStatus", "");
+}
+
+function fillLlmApiForm(api) {
+  state.editingLlmApi = api;
+  $("llmApiForm").classList.remove("hidden");
+  $("llmApiFormTitle").textContent = "编辑 LLM 模型";
+  $("llmApiId").value = api.id || "";
+  $("llmApiName").value = api.name || "";
+  $("llmApiModel").value = api.model || "";
+  $("llmApiEndpoint").value = api.endpoint || "";
+  $("llmApiKey").value = api.apiKey || "";
+  $("llmApiTemperature").value = String(api.temperature ?? 0.4);
+  $("llmApiEnabled").checked = api.enabled !== false;
+  setStatus("llmApiStatus", "正在编辑已有 LLM 模型。API Key 保持星号表示不修改。");
+}
+
+async function saveLlmApi(event) {
+  event.preventDefault();
+  setStatus("llmApiStatus", "正在保存...");
+  const body = {
+    id: $("llmApiId").value || undefined,
+    name: $("llmApiName").value,
+    model: $("llmApiModel").value,
+    endpoint: $("llmApiEndpoint").value,
+    apiKey: $("llmApiKey").value,
+    temperature: Number($("llmApiTemperature").value) || 0.4,
+    enabled: $("llmApiEnabled").checked
+  };
+  try {
+    await request("/api/admin/llm-apis", { method: "POST", body: JSON.stringify(body) });
+    setStatus("llmApiStatus", "保存成功。");
+    clearLlmApiForm();
+    $("llmApiForm").classList.add("hidden");
+    await loadLlmAdminConfig();
+    await loadLlmModels();
+  } catch (error) {
+    setStatus("llmApiStatus", error.message, true);
+  }
+}
+
+async function deleteLlmApi(id) {
+  if (!confirm("确认删除这个 LLM 模型配置？")) return;
+  try {
+    await request(`/api/admin/llm-apis/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await loadLlmAdminConfig();
+    await loadLlmModels();
+  } catch (error) {
+    setStatus("llmApiStatus", error.message, true);
   }
 }
 
@@ -864,6 +1187,7 @@ function renderRecords(records, listId = "recordsList") {
     const timeText = formatRecordTime(record.time);
     const isSuccess = outputs.some((item) => typeof item === "string" && item.trim());
     const modeText = record.requestMode === "edit" ? "edit" : "generation";
+    const qualityText = record.quality ? ` · quality: ${escapeHtml(record.quality)}` : "";
     const meta = document.createElement("div");
     meta.className = "record-meta";
     if (isUserList) {
@@ -874,7 +1198,7 @@ function renderRecords(records, listId = "recordsList") {
           <span class="badge time-badge">${escapeHtml(timeText)}</span>
           <span class="badge ${isSuccess ? "success-badge" : "failed-badge"}">${isSuccess ? "成功" : "失败"}</span>
         </div>
-        <span>生成模型：${escapeHtml(record.model || record.modelId || "-")}</span>
+        <span>生成模型：${escapeHtml(record.model || record.modelId || "-")}${qualityText}</span>
         <span>生成图片数量：${escapeHtml(record.count || outputs.length || 0)} 张</span>
         <p>Prompt：${escapeHtml(record.prompt || "-")}</p>
       `;
@@ -886,7 +1210,7 @@ function renderRecords(records, listId = "recordsList") {
           <span class="badge time-badge">时间：${escapeHtml(timeText)}</span>
           <span class="badge ${isSuccess ? "success-badge" : "failed-badge"}">${isSuccess ? "成功" : "失败"}</span>
         </div>
-        <span>生成模型：${escapeHtml(record.model || record.modelId || "-")}</span>
+        <span>生成模型：${escapeHtml(record.model || record.modelId || "-")}${qualityText}</span>
         <span>参考图：${escapeHtml(record.referenceName || record.reference || "无")}</span>
         <span>生成图片数量：${escapeHtml(record.count || outputs.length || 0)} 张</span>
         <p>Prompt：${escapeHtml(record.prompt || "-")}</p>
@@ -1008,7 +1332,7 @@ async function handleReferenceFiles(fileList) {
   $("referenceInput").value = "";
   if (!files.length) {
     renderReferenceThumbs();
-    $("referenceNote").textContent = '可选，可在 prompt 中描述"参考图 1"的主体或"参考图 2"的风格。';
+    updateReferenceNote();
     return;
   }
   const limited = files.slice(0, 9);
@@ -1021,9 +1345,7 @@ async function handleReferenceFiles(fileList) {
     state.canClearReferences = false;
     renderReferenceThumbs();
     updateClearReferencesButton();
-    $("referenceNote").textContent = state.references.length
-      ? `已选择 ${state.references.length} 张参考图，可在 prompt 中按编号描述。`
-      : "参考图请控制在 12MB 以内。";
+    updateReferenceNote();
   } catch (error) {
     $("referenceNote").textContent = error.message;
   }
@@ -1083,65 +1405,12 @@ function makeReferencePreview(dataUrl) {
   });
 }
 
-async function importPendingImageTask() {
-  const raw = sessionStorage.getItem("pendingImageTask") || localStorage.getItem("pendingImageTask");
-  if (!raw) return;
-  sessionStorage.removeItem("pendingImageTask");
-  localStorage.removeItem("pendingImageTask");
-
-  let task = null;
-  try {
-    task = JSON.parse(raw);
-  } catch {
-    return;
-  }
-
-  const requestMode = String(task.requestMode || "").trim();
-  if (requestMode === "edit" || requestMode === "generation") {
-    setRequestMode(requestMode);
-  }
-
-  const promptFormat = String(task.promptFormat || "").trim();
-  if (promptFormat === "json" || promptFormat === "plain") {
-    setPromptFormat(promptFormat);
-  }
-
-  const prompt = String(task.prompt || "").trim();
-  if (prompt) {
-    state.promptDrafts[state.promptFormat] = prompt;
-    renderPromptInput();
-  }
-
-  const images = Array.isArray(task.images) ? task.images.slice(0, 9) : [];
-  state.references = [];
-  for (const [index, image] of images.entries()) {
-    const data = image?.data || image?.dataUrl || "";
-    if (!String(data).startsWith("data:image/")) continue;
-    state.references.push({
-      name: image.name || `参考图 ${index + 1}.png`,
-      data,
-      preview: data,
-    });
-  }
-
-  state.canClearReferences = false;
-  renderReferenceThumbs();
-  updateClearReferencesButton();
-  $("referenceNote").textContent = state.references.length
-    ? `已从 Prompt 优化器导入 ${state.references.length} 张参考图，顺序已保留。`
-    : "已从 Prompt 优化器导入提示词，未携带参考图。";
-  setStatus("statusText", "已从 Prompt 优化器导入内容，可继续选择模型和参数生成图片。");
-}
-
-
 function removeReference(index) {
   state.references.splice(index, 1);
   state.canClearReferences = false;
   renderReferenceThumbs();
   updateClearReferencesButton();
-  $("referenceNote").textContent = state.references.length
-    ? `已选择 ${state.references.length} 张参考图，可在 prompt 中按编号描述。`
-    : '可选，可在 prompt 中描述"参考图 1"的主体或"参考图 2"的风格。';
+  updateReferenceNote();
 }
 
 function clearReferences() {
@@ -1156,21 +1425,6 @@ function clearReferences() {
 function updateClearReferencesButton() {
   const button = $("clearReferencesBtn");
   button.disabled = !state.references.length || !state.canClearReferences;
-}
-
-function jumpToPromptOptimizer() {
-  syncPromptDraft();
-  const activePrompt = state.promptDrafts[state.promptFormat] || "";
-  sessionStorage.setItem("pendingPromptTask", JSON.stringify({
-    description: activePrompt.trim(),
-    mode: state.references.length ? "reference" : "text",
-    images: state.references.map((item, index) => ({
-      name: item.name || `参考图 ${index + 1}.png`,
-      data: item.data,
-    })),
-    createdAt: new Date().toISOString(),
-  }));
-  window.location.href = "/prompt.html";
 }
 
 $("referenceInput").addEventListener("change", () => handleReferenceFiles($("referenceInput").files));
@@ -1210,6 +1464,8 @@ $("adminUsersList").addEventListener("click", async (event) => {
   }
 });
 $("apiForm").addEventListener("submit", saveApi);
+$("llmApiForm").addEventListener("submit", saveLlmApi);
+$("newLlmApiBtn").addEventListener("click", clearLlmApiForm);
 $("passwordForm").addEventListener("submit", changePassword);
 $("newApiBtn").addEventListener("click", clearApiForm);
 $("refreshRecordsBtn").addEventListener("click", loadRecords);
@@ -1219,17 +1475,24 @@ $("refreshUserRecordsBtn").addEventListener("click", loadUserRecords);
 $("closePreviewBtn").addEventListener("click", () => $("previewDialog").close());
 $("downloadAllBtn").addEventListener("click", downloadAllImages);
 $("generateBtn").addEventListener("click", generateImage);
-$("jumpToPromptBtn").addEventListener("click", jumpToPromptOptimizer);
 $("modelSelect").addEventListener("change", updateModelHint);
-$("generationModeBtn").addEventListener("click", () => setRequestMode("generation"));
-$("editModeBtn").addEventListener("click", () => setRequestMode("edit"));
-$("plainPromptBtn").addEventListener("click", () => setPromptFormat("plain"));
-$("jsonPromptBtn").addEventListener("click", () => setPromptFormat("json"));
-$("promptInput").addEventListener("input", syncPromptDraft);
+$("editTaskBtn").addEventListener("click", () => setTaskMode("edit"));
+$("referenceTaskBtn").addEventListener("click", () => setTaskMode("reference"));
+$("textTaskBtn").addEventListener("click", () => setTaskMode("text"));
+$("optimizePromptBtn").addEventListener("click", optimizePrompt);
+$("clearOptimizerBtn").addEventListener("click", clearOptimizerInputs);
+$("plainPromptBtn").addEventListener("click", () => setOutputView("plain"));
+$("jsonPromptBtn").addEventListener("click", () => setOutputView("json"));
+$("qualitySelect").addEventListener("change", () => {
+  state.quality = $("qualitySelect").value || "high";
+});
 
+syncAuthGatedButtons();
+loadAdminMeta().catch(() => {});
 checkAdminSessionAfterRedirect().catch(() => {});
 fetchVisitorFromSession().catch(() => {});
-renderPromptInput();
-importPendingImageTask().catch((error) => setStatus("statusText", error.message, true));
 loadModels().catch((error) => setStatus("statusText", error.message, true));
+loadLlmModels().catch(() => {});
 loadUserRecords().catch((error) => setStatus("statusText", error.message, true));
+updateReferenceNote();
+updatePromptFormatVisibility();

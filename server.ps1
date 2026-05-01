@@ -221,7 +221,13 @@ function ConvertFrom-DataUrl($DataUrl, [int]$Index) {
   }
 }
 
-function Invoke-GptImageEdit($Api, [string]$Prompt, $Refs, [string]$Size) {
+function Get-SanitizedQuality($Value) {
+  $text = ([string]$Value).Trim().ToLowerInvariant()
+  if ($text -eq "low" -or $text -eq "high") { return $text }
+  return ""
+}
+
+function Invoke-GptImageEdit($Api, [string]$Prompt, $Refs, [string]$Size, [string]$Quality) {
   Add-Type -AssemblyName System.Net.Http
   $client = [System.Net.Http.HttpClient]::new()
   $form = [System.Net.Http.MultipartFormDataContent]::new()
@@ -232,6 +238,9 @@ function Invoke-GptImageEdit($Api, [string]$Prompt, $Refs, [string]$Size) {
     $form.Add([System.Net.Http.StringContent]::new($Prompt), "prompt")
     $form.Add([System.Net.Http.StringContent]::new("1"), "n")
     $form.Add([System.Net.Http.StringContent]::new($Size), "size")
+    if ($Quality) {
+      $form.Add([System.Net.Http.StringContent]::new($Quality), "quality")
+    }
 
     $items = @(Get-ValueList $Refs)
     for ($i = 0; $i -lt $items.Count; $i++) {
@@ -691,7 +700,7 @@ function Save-GeneratedImages($Images) {
   return @($saved)
 }
 
-function Invoke-ImageApi($Api, [string]$Prompt, $Reference, [int]$Count) {
+function Invoke-ImageApi($Api, [string]$Prompt, $Reference, [int]$Count, [string]$Quality) {
   if ($Count -lt 1) { $Count = 1 }
   if ($Count -gt 9) { $Count = 9 }
   $images = @()
@@ -699,6 +708,7 @@ function Invoke-ImageApi($Api, [string]$Prompt, $Reference, [int]$Count) {
   $refs = @(Get-ValueList $Reference)
   $isGptImage = Test-GptImageModel $Api.model
   $requestSize = $(if ($Api.size) { [string]$Api.size } else { "1024x1024" })
+  $qualityValue = $(if ($isGptImage) { $Quality } else { "" })
 
   for ($i = 1; $i -le $Count; $i++) {
     $promptToSend = $Prompt
@@ -706,7 +716,7 @@ function Invoke-ImageApi($Api, [string]$Prompt, $Reference, [int]$Count) {
       $promptToSend = "$Prompt`n生成第 $i 张图：保持同一主题和比例，构图、细节和镜头语言做自然变化。"
     }
     if ($isGptImage -and $refs.Count -gt 0) {
-      $images += @(Invoke-GptImageEdit -Api $Api -Prompt $promptToSend -Refs $refs -Size $requestSize)
+      $images += @(Invoke-GptImageEdit -Api $Api -Prompt $promptToSend -Refs $refs -Size $requestSize -Quality $qualityValue)
       continue
     }
     $body = [ordered]@{
@@ -714,6 +724,9 @@ function Invoke-ImageApi($Api, [string]$Prompt, $Reference, [int]$Count) {
       prompt = $promptToSend
       n = 1
       size = $requestSize
+    }
+    if ($isGptImage -and $qualityValue) {
+      $body["quality"] = $qualityValue
     }
     if (!$isGptImage) {
       $body["response_format"] = "url"
@@ -985,6 +998,7 @@ function Handle-Request($Context) {
       }
       $referenceName = ([string]$body.referenceName).Trim()
       $referencePreviews = @(Get-ReferencePreviews -Names $referenceName -References $reference -IncomingPreviews $body.referencePreviews)
+      $quality = Get-SanitizedQuality $body.quality
       $count = 1
       try { $count = [int]$body.count } catch { $count = 1 }
       if ($count -lt 1) { $count = 1 }
@@ -996,7 +1010,7 @@ function Handle-Request($Context) {
       if (!$api) { Send-Json $res 400 @{ error = "请选择可用的生图模型" }; return }
       $time = [DateTime]::UtcNow.ToString("o")
       try {
-        $rawImages = @(Invoke-ImageApi -Api $api -Prompt $prompt -Reference $reference -Count $count)
+        $rawImages = @(Invoke-ImageApi -Api $api -Prompt $prompt -Reference $reference -Count $count -Quality $quality)
         $images = @(Save-GeneratedImages $rawImages)
         Add-Log ([ordered]@{
           time = $time
@@ -1007,6 +1021,7 @@ function Handle-Request($Context) {
           modelId = $api.id
           prompt = $(if ($originalPrompt) { $originalPrompt } else { $prompt })
           aspect = $aspect
+          quality = $quality
           referenceName = $(if ($referenceName) { $referenceName } else { "无" })
           referencePreviews = @($referencePreviews)
           count = $images.Count
@@ -1024,6 +1039,7 @@ function Handle-Request($Context) {
           modelId = $api.id
           prompt = $(if ($originalPrompt) { $originalPrompt } else { $prompt })
           aspect = $aspect
+          quality = $quality
           referenceName = $(if ($referenceName) { $referenceName } else { "无" })
           referencePreviews = @($referencePreviews)
           count = $count

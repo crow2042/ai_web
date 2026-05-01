@@ -108,6 +108,7 @@ function compactRecord(entry) {
     modelId: entry.modelId,
     prompt: entry.prompt,
     aspect: entry.aspect,
+    quality: entry.quality,
     referenceName: entry.referenceName,
     referencePreviews: entry.referencePreviews,
     count: entry.count,
@@ -115,6 +116,11 @@ function compactRecord(entry) {
     status: entry.status,
     error: entry.error
   };
+}
+
+function sanitizeQuality(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return text === "low" || text === "high" ? text : "";
 }
 
 function appendLog(entry) {
@@ -424,12 +430,13 @@ function dataUrlToFile(dataUrl, index) {
   };
 }
 
-async function callGptImageEdit(api, prompt, refs, size) {
+async function callGptImageEdit(api, prompt, refs, size, quality) {
   const form = new FormData();
   form.append("model", api.model);
   form.append("prompt", prompt);
   form.append("n", "1");
   form.append("size", size);
+  if (quality) form.append("quality", quality);
 
   let imageCount = 0;
   refs.forEach((ref, index) => {
@@ -596,19 +603,20 @@ async function persistGeneratedImages(images) {
   return saved;
 }
 
-async function callImageApi(api, prompt, references, count) {
+async function callImageApi(api, prompt, references, count, quality) {
   const outputs = [];
   const refs = valueList(references);
   const total = Math.max(1, Math.min(9, Number(count) || 1));
   const gptImage = isGptImageModel(api.model);
   const requestSize = api.size || "1024x1024";
+  const qualityValue = gptImage ? sanitizeQuality(quality) : "";
 
   for (let i = 1; i <= total; i += 1) {
     const promptToSend = total > 1
       ? `${prompt}\n生成第 ${i} 张图：保持同一主题和比例，构图、细节和镜头语言做自然变化。`
       : prompt;
     if (gptImage && refs.length) {
-      outputs.push(...await callGptImageEdit(api, promptToSend, refs, requestSize));
+      outputs.push(...await callGptImageEdit(api, promptToSend, refs, requestSize, qualityValue));
       continue;
     }
     const body = {
@@ -617,6 +625,7 @@ async function callImageApi(api, prompt, references, count) {
       n: 1,
       size: requestSize
     };
+    if (gptImage && qualityValue) body.quality = qualityValue;
     if (!gptImage) {
       body.response_format = "url";
       body.stream = false;
@@ -1061,6 +1070,7 @@ async function route(req, res) {
       const referenceName = String(body.referenceName || "").trim();
       const refPreviews = sanitizeReferencePreviews(body.referencePreviews, referenceName, references);
       const aspect = String(body.aspect || "").trim();
+      const quality = sanitizeQuality(body.quality);
       const count = Math.max(1, Math.min(9, Number(body.count) || 1));
       if (!visitor) return sendJson(res, 400, { error: "请先填写访问者身份" });
       if (!prompt) return sendJson(res, 400, { error: "Prompt 不能为空" });
@@ -1071,7 +1081,7 @@ async function route(req, res) {
 
       const startedAt = new Date().toISOString();
       try {
-        const rawImages = await callImageApi(api, prompt, references, count);
+        const rawImages = await callImageApi(api, prompt, references, count, quality);
         const images = await persistGeneratedImages(rawImages);
         await appendLog({
           time: startedAt,
@@ -1082,6 +1092,7 @@ async function route(req, res) {
           modelId: api.id,
           prompt: originalPrompt || prompt,
           aspect,
+          quality,
           referenceName: referenceName || "无",
           referencePreviews: refPreviews,
           count: images.length,
@@ -1099,6 +1110,7 @@ async function route(req, res) {
           modelId: api.id,
           prompt: originalPrompt || prompt,
           aspect,
+          quality,
           referenceName: referenceName || "无",
           referencePreviews: refPreviews,
           count,

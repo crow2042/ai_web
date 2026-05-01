@@ -279,6 +279,12 @@ button:disabled {
   margin-bottom: 22px;
 }
 
+.section-title.stack {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
 .section-title h2 {
   line-height: 1.2;
 }
@@ -327,6 +333,14 @@ h3 {
   gap: 10px;
 }
 
+.switch-block.stack {
+  gap: 8px;
+}
+
+.switch-block.stack .switch-label {
+  display: block;
+}
+
 .switch-row,
 .prompt-head {
   display: flex;
@@ -362,6 +376,11 @@ h3 {
 
 .mode-switch {
   width: min(420px, 100%);
+}
+
+.task-mode-switch {
+  width: min(520px, 100%);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .slider-switch .switch-track,
@@ -414,6 +433,14 @@ h3 {
 
 .switch-btn.is-active {
   color: var(--primary-dark);
+}
+
+.task-mode-switch .switch-btn.is-active {
+  background: linear-gradient(135deg, rgba(237, 227, 255, 0.96), rgba(255, 241, 236, 0.96));
+  border-radius: 11px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 10px 24px rgba(107, 88, 155, 0.14);
 }
 
 .switch-btn:hover {
@@ -500,6 +527,15 @@ label {
   font-size: 13px;
   font-style: normal;
   font-weight: 500;
+}
+
+.upload-zone em.upload-note {
+  margin-top: 8px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 143, 95, 0.14);
+  color: var(--warm);
+  font-weight: 700;
 }
 
 .reference-thumbs {
@@ -634,6 +670,136 @@ select:focus {
   grid-template-columns: minmax(170px, 1fr) minmax(110px, 0.42fr) auto;
   align-items: end;
   gap: 14px;
+}
+
+.right-controls {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 12px 14px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.left-params {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.left-params .field {
+  margin-bottom: 0;
+}
+
+.generator > .field {
+  margin-bottom: 12px;
+}
+
+.generator .reference-field {
+  margin-bottom: 16px;
+}
+
+.generator .optimizer-actions {
+  margin: 6px 0 6px;
+}
+
+.generator .status {
+  margin: 4px 0 10px;
+  min-height: 18px;
+}
+
+.generator .prompt-field {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.generator .prompt-field textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.right-controls > label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #2d384d;
+  margin: 0;
+}
+
+.right-controls > label select {
+  height: 40px;
+}
+
+.right-controls .inline-action {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+}
+
+.right-controls .inline-action .primary {
+  width: 100%;
+  min-width: 0;
+}
+
+.optimizer-actions {
+  display: flex;
+  gap: 12px;
+  margin: 4px 0 4px;
+}
+
+.optimizer-actions .primary {
+  flex: 1;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.field > span {
+  font-size: 13px;
+  font-weight: 700;
+  color: #2d384d;
+}
+
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.field textarea {
+  min-height: 80px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+[hidden] {
+  display: none !important;
 }
 
 .inline-action {
