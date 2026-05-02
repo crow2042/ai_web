@@ -13,6 +13,28 @@
     <link rel="stylesheet" href="/hall.css" />
   </head>
   <body>
+    <button class="theme-toggle-hall" id="themeToggleBtn" type="button" aria-label="切换到深色主题" title="切换到深色主题">
+      <span class="hall-face hall-face-light" aria-hidden="true">
+        <svg viewBox="0 0 24 24" class="hall-icon" focusable="false" aria-hidden="true">
+          <circle cx="12" cy="12" r="5" fill="currentColor"></circle>
+          <g stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M12 1v3"></path>
+            <path d="M12 20v3"></path>
+            <path d="M1 12h3"></path>
+            <path d="M20 12h3"></path>
+            <path d="M4.22 4.22l2.12 2.12"></path>
+            <path d="M17.66 17.66l2.12 2.12"></path>
+            <path d="M4.22 19.78l2.12-2.12"></path>
+            <path d="M17.66 6.34l2.12-2.12"></path>
+          </g>
+        </svg>
+      </span>
+      <span class="hall-face hall-face-dark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" class="hall-icon" focusable="false" aria-hidden="true">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" fill="currentColor"></path>
+        </svg>
+      </span>
+    </button>
     <main class="hall-shell">
       <div class="login-banner hidden" id="loginBanner">
         <span>登录后即可使用全部功能</span>
@@ -47,6 +69,29 @@
 
     <script>
       (async function () {
+        var themeStorageKey = "preferredTheme";
+
+        function applyTheme(theme) {
+          document.documentElement.setAttribute("data-theme", theme);
+          var btn = document.getElementById("themeToggleBtn");
+          if (!btn) return;
+          var isDark = theme === "dark";
+          btn.dataset.theme = theme;
+          btn.setAttribute("aria-label", isDark ? "切换到浅色主题" : "切换到深色主题");
+          btn.setAttribute("title", isDark ? "切换到浅色主题" : "切换到深色主题");
+        }
+
+        function getStoredTheme() {
+          return localStorage.getItem(themeStorageKey) === "dark" ? "dark" : "light";
+        }
+
+        applyTheme(getStoredTheme());
+        document.getElementById("themeToggleBtn").addEventListener("click", function () {
+          var nextTheme = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+          localStorage.setItem(themeStorageKey, nextTheme);
+          applyTheme(nextTheme);
+        });
+
         try {
           const session = await fetch("/api/admin/session").then(function (r) { return r.json(); });
           if (!session.authed) {

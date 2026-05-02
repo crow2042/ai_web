@@ -58,6 +58,7 @@ function sanitizeFeishuAuth(input = {}) {
 
 function sanitizeAdminUser(input = {}) {
   return {
+    id: String(input.id || input.adminId || input.admin_id || (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`)).trim(),
     openId: String(input.openId || input.open_id || "").trim(),
     userId: String(input.userId || input.user_id || "").trim(),
     unionId: String(input.unionId || input.union_id || "").trim(),
@@ -81,7 +82,7 @@ function normalizeConfig(config) {
   if (!Array.isArray(config.adminUsers)) config.adminUsers = [];
   config.adminUsers = config.adminUsers
     .map(sanitizeAdminUser)
-    .filter((user) => user.openId || user.userId || user.unionId);
+    .filter((user) => user.name || user.openId || user.userId || user.unionId);
   config.feishuAuth = sanitizeFeishuAuth(config.feishuAuth || {});
   return config;
 }
@@ -200,7 +201,7 @@ const pendingOAuthStates = new Map();
 
 function saveOAuthState(state, returnTo) {
   const id = crypto.randomBytes(16).toString("hex");
-  pendingOAuthStates.set(id, { state, returnTo: returnTo || "/prompt.html", expiresAt: Date.now() + OAUTH_STATE_MAX_AGE_MS });
+  pendingOAuthStates.set(id, { state, returnTo: returnTo || "/image.html", expiresAt: Date.now() + OAUTH_STATE_MAX_AGE_MS });
   return id;
 }
 
@@ -979,7 +980,7 @@ async function route(req, res) {
         return sendJson(res, 400, { error: "飞书登录配置不完整，请先在管理员配置中补全。" });
       }
       const state = crypto.randomBytes(16).toString("hex");
-      const returnTo = String(url.searchParams.get("returnTo") || "/prompt.html").trim();
+      const returnTo = String(url.searchParams.get("returnTo") || "/image.html").trim();
       const stateId = saveOAuthState(state, returnTo);
       return sendJson(res, 200, { url: buildFeishuAuthorizeUrl(auth, state), stateId });
     }
@@ -992,19 +993,19 @@ async function route(req, res) {
       const returnedState = String(url.searchParams.get("state") || "").trim();
       const stateId = String(url.searchParams.get("state_id") || "").trim();
       if (errorText) {
-        return send(res, 302, "", { Location: "/prompt.html?admin_login_error=" + encodeURIComponent(errorText) });
+        return send(res, 302, "", { Location: "/image.html?admin_login_error=" + encodeURIComponent(errorText) });
       }
       if (!auth.enabled || !auth.appId || !auth.appSecret || !auth.redirectUri) {
-        return send(res, 302, "", { Location: "/prompt.html?admin_login_error=" + encodeURIComponent("飞书登录配置不完整") });
+        return send(res, 302, "", { Location: "/image.html?admin_login_error=" + encodeURIComponent("飞书登录配置不完整") });
       }
       if (!code) {
-        return send(res, 302, "", { Location: "/prompt.html?admin_login_error=" + encodeURIComponent("缺少飞书授权码") });
+        return send(res, 302, "", { Location: "/image.html?admin_login_error=" + encodeURIComponent("缺少飞书授权码") });
       }
       const stateEntry = consumeOAuthState(stateId);
       if (stateId && !stateEntry) {
-        return send(res, 302, "", { Location: "/prompt.html?admin_login_error=" + encodeURIComponent("登录状态已失效，请重新登录") });
+        return send(res, 302, "", { Location: "/image.html?admin_login_error=" + encodeURIComponent("登录状态已失效，请重新登录") });
       }
-      const returnTo = stateEntry?.returnTo || "/prompt.html";
+      const returnTo = stateEntry?.returnTo || "/image.html";
       if (stateEntry && returnedState !== stateEntry.state) {
         return send(res, 302, "", { Location: returnTo + "?admin_login_error=" + encodeURIComponent("登录状态校验失败，请重新登录") });
       }
@@ -1187,24 +1188,6 @@ async function route(req, res) {
       }
     }
 
-    if (req.method === "POST" && url.pathname === "/api/admin/login") {
-      const body = await getBody(req);
-      const config = readConfig();
-      if (!isLegacyAdminLoginEnabled(config)) {
-        return sendJson(res, 400, { error: "当前已启用飞书登录，请使用飞书登录管理员。" });
-      }
-      const ok = body.username === config.admin.username &&
-        hashPassword(String(body.password || ""), config.admin.salt) === config.admin.hash;
-      if (!ok) return sendJson(res, 401, { error: "管理员账号或密码错误" });
-      const token = createSession({
-        authType: "legacy",
-        adminUser: { name: config.admin.username, isSuperAdmin: true }
-      });
-      return sendJson(res, 200, { ok: true }, {
-        "Set-Cookie": createCookieHeader(token)
-      });
-    }
-
     if (req.method === "GET" && url.pathname === "/api/admin/config") {
       const session = requireAdminSession(req, res);
       if (!session) return;
@@ -1304,27 +1287,6 @@ async function route(req, res) {
       return sendJson(res, 200, { ok: true });
     }
 
-    if (req.method === "POST" && url.pathname === "/api/admin/password") {
-      if (!requireAdmin(req, res)) return;
-      const body = await getBody(req);
-      const config = readConfig();
-      if (!isLegacyAdminLoginEnabled(config)) {
-        return sendJson(res, 400, { error: "已启用飞书登录后，不再支持修改本地管理员账号密码。" });
-      }
-      const ok = body.currentUsername === config.admin.username &&
-        hashPassword(String(body.currentPassword || ""), config.admin.salt) === config.admin.hash;
-      if (!ok) return sendJson(res, 401, { error: "当前管理员账号或密码错误" });
-      const nextUsername = String(body.nextUsername || "").trim();
-      const nextPassword = String(body.nextPassword || "");
-      if (!nextUsername || nextPassword.length < 6) {
-        return sendJson(res, 400, { error: "新账号不能为空，新密码至少 6 位" });
-      }
-      const salt = crypto.randomBytes(16).toString("hex");
-      config.admin = { username: nextUsername, salt, hash: hashPassword(nextPassword, salt) };
-      await saveConfig(config);
-      return sendJson(res, 200, { ok: true });
-    }
-
     if (req.method === "POST" && url.pathname === "/api/admin/feishu-config") {
       const session = requireSuperAdmin(req, res);
       if (!session) return;
@@ -1344,10 +1306,12 @@ async function route(req, res) {
       const body = await getBody(req);
       const config = readConfig();
       const incoming = sanitizeAdminUser({ ...body, addedBy: session.adminUser?.name || "admin" });
-      if (!incoming.openId && !incoming.userId && !incoming.unionId) {
-        return sendJson(res, 400, { error: "请至少填写 open_id、user_id 或 union_id 之一。" });
+      if (!incoming.name) {
+        return sendJson(res, 400, { error: "请至少填写姓名。" });
       }
-      const index = config.adminUsers.findIndex((item) => matchAdminUser(item, incoming));
+      const index = config.adminUsers.findIndex((item) =>
+        (incoming.id && item.id === incoming.id) || matchAdminUser(item, incoming)
+      );
       if (index >= 0) config.adminUsers[index] = { ...config.adminUsers[index], ...incoming };
       else config.adminUsers.push(incoming);
       await saveConfig(config);
@@ -1359,7 +1323,7 @@ async function route(req, res) {
       if (!session) return;
       const id = decodeURIComponent(url.pathname.split("/").pop() || "");
       const config = readConfig();
-      config.adminUsers = config.adminUsers.filter((user) => ![user.openId, user.userId, user.unionId].includes(id));
+      config.adminUsers = config.adminUsers.filter((user) => user.id !== id);
       await saveConfig(config);
       return sendJson(res, 200, { ok: true, adminUsers: config.adminUsers });
     }

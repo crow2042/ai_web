@@ -967,21 +967,6 @@ function Handle-Request($Context) {
       return
     }
 
-    if ($req.HttpMethod -eq "POST" -and $path -eq "/api/admin/login") {
-      $body = Read-Body $req
-      $config = Read-Config
-      $ok = ($body.username -eq $config.admin.username -and (Get-PasswordHash -Password ([string]$body.password) -Salt $config.admin.salt) -eq $config.admin.hash)
-      if (!$ok) { Send-Json $res 401 @{ error = "管理员账号或密码错误" }; return }
-      $bytes = New-Object byte[] 32
-      $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-      $rng.GetBytes($bytes)
-      $rng.Dispose()
-      $token = [BitConverter]::ToString($bytes).Replace("-", "").ToLowerInvariant()
-      $Sessions[$token] = [DateTimeOffset]::UtcNow.AddHours(8).ToUnixTimeSeconds()
-      Send-Json $res 200 @{ ok = $true } @{ "Set-Cookie" = "admin_session=$token; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800" }
-      return
-    }
-
     if ($req.HttpMethod -eq "POST" -and $path -eq "/api/generate") {
       $body = Read-Body $req
       $visitor = ([string]$body.visitor).Trim()
@@ -1201,26 +1186,6 @@ function Handle-Request($Context) {
       $config = Read-Config
       Ensure-LlmApisProperty $config
       $config.llmApis = @(@($config.llmApis) | Where-Object { $_.id -ne $id })
-      Save-Config $config
-      Send-Json $res 200 @{ ok = $true }
-      return
-    }
-
-    if ($req.HttpMethod -eq "POST" -and $path -eq "/api/admin/password") {
-      if (!(Test-Admin $req)) { Send-Json $res 401 @{ error = "请先登录管理员账号" }; return }
-      $body = Read-Body $req
-      $config = Read-Config
-      $ok = ($body.currentUsername -eq $config.admin.username -and (Get-PasswordHash -Password ([string]$body.currentPassword) -Salt $config.admin.salt) -eq $config.admin.hash)
-      if (!$ok) { Send-Json $res 401 @{ error = "当前管理员账号或密码错误" }; return }
-      $nextUser = ([string]$body.nextUsername).Trim()
-      $nextPass = [string]$body.nextPassword
-      if (!$nextUser -or $nextPass.Length -lt 6) { Send-Json $res 400 @{ error = "新账号不能为空，新密码至少 6 位" }; return }
-      $bytes = New-Object byte[] 16
-      $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-      $rng.GetBytes($bytes)
-      $rng.Dispose()
-      $salt = [BitConverter]::ToString($bytes).Replace("-", "").ToLowerInvariant()
-      $config.admin = [ordered]@{ username = $nextUser; salt = $salt; hash = (Get-PasswordHash -Password $nextPass -Salt $salt) }
       Save-Config $config
       Send-Json $res 200 @{ ok = $true }
       return

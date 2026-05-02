@@ -4,6 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AI 生图工作台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Space+Grotesk:wght@500;700&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="/styles.css?v=merge-1" />
   </head>
   <body>
@@ -13,6 +19,28 @@
         <strong>AI 生图工作台</strong>
       </div>
       <div class="topbar-actions">
+        <button class="theme-toggle" id="themeToggleBtn" type="button" aria-label="切换到深色主题" title="切换到深色主题">
+          <span class="theme-toggle-face theme-toggle-face-light" aria-hidden="true">
+            <svg viewBox="0 0 24 24" class="theme-toggle-icon" focusable="false" aria-hidden="true">
+              <circle cx="12" cy="12" r="5" fill="currentColor"></circle>
+              <g stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M12 1v3"></path>
+                <path d="M12 20v3"></path>
+                <path d="M1 12h3"></path>
+                <path d="M20 12h3"></path>
+                <path d="M4.22 4.22l2.12 2.12"></path>
+                <path d="M17.66 17.66l2.12 2.12"></path>
+                <path d="M4.22 19.78l2.12-2.12"></path>
+                <path d="M17.66 6.34l2.12-2.12"></path>
+              </g>
+            </svg>
+          </span>
+          <span class="theme-toggle-face theme-toggle-face-dark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" class="theme-toggle-icon" focusable="false" aria-hidden="true">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" fill="currentColor"></path>
+            </svg>
+          </span>
+        </button>
         <a class="nav-link" href="/">功能大厅</a>
         <button class="primary compact" id="topbarLoginBtn">登录</button>
         <button class="icon-button hidden" id="settingsBtn" title="管理员配置" aria-label="管理员配置">⚙</button>
@@ -201,12 +229,7 @@
           </div>
           <form id="adminUserForm">
             <div class="admin-grid">
-              <label>姓名<input id="adminUserName" placeholder="例如：张三" /></label>
-              <label>Open ID<input id="adminUserOpenId" placeholder="ou_xxx" /></label>
-              <label>User ID<input id="adminUserUserId" placeholder="可选" /></label>
-              <label>Union ID<input id="adminUserUnionId" placeholder="可选" /></label>
-              <label>邮箱<input id="adminUserEmail" placeholder="可选" /></label>
-              <label class="check-row"><input id="adminUserSuperAdmin" type="checkbox" checked /> 超级管理员</label>
+              <label>姓名<input id="adminUserName" placeholder="必填，例如：张三" /></label>
             </div>
             <button type="submit" class="primary compact">添加或更新管理员</button>
             <p id="adminUserStatus" class="status"></p>
@@ -281,18 +304,6 @@
           </div>
           <div id="recordsList" class="records-list"></div>
         </div>
-
-        <form id="passwordForm" class="admin-card">
-          <h3>修改管理员账号密码</h3>
-          <div class="admin-grid">
-            <label>当前账号<input id="currentUser" autocomplete="username" /></label>
-            <label>当前密码<input id="currentPass" type="password" autocomplete="current-password" /></label>
-            <label>新账号<input id="nextUser" autocomplete="username" /></label>
-            <label>新密码<input id="nextPass" type="password" autocomplete="new-password" /></label>
-          </div>
-          <button type="submit" class="compact">修改账号密码</button>
-          <p class="status" id="passwordStatus"></p>
-        </form>
       </div>
     </dialog>
 

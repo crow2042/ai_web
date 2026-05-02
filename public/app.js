@@ -24,6 +24,7 @@ const state = {
 };
 const adminSessionKey = "adminSessionActive";
 const recordModeCacheKey = "previewRecordModeCache";
+const themeStorageKey = "preferredTheme";
 const navType = globalThis.performance?.getEntriesByType?.("navigation")?.[0]?.type || "";
 if (navType === "reload") {
   sessionStorage.removeItem(adminSessionKey);
@@ -40,6 +41,43 @@ function getClientId() {
     localStorage.setItem("clientId", id);
   }
   return id;
+}
+
+function getStoredTheme() {
+  return localStorage.getItem(themeStorageKey) === "dark" ? "dark" : "light";
+}
+
+function updateThemeToggleIcon(theme) {
+  const btn = $("themeToggleBtn");
+  if (!btn) return;
+  const isDark = theme === "dark";
+  const label = isDark ? "切换到浅色主题" : "切换到深色主题";
+  btn.dataset.theme = theme;
+  btn.setAttribute("aria-pressed", isDark ? "true" : "false");
+  btn.setAttribute("aria-label", label);
+  btn.setAttribute("title", label);
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  updateThemeToggleIcon(theme);
+}
+
+function initThemeToggle() {
+  applyTheme(getStoredTheme());
+  const btn = $("themeToggleBtn");
+  if (!btn) return;
+  const toggleTheme = () => {
+    const nextTheme = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    localStorage.setItem(themeStorageKey, nextTheme);
+    applyTheme(nextTheme);
+  };
+  btn.addEventListener("click", toggleTheme);
+  btn.addEventListener("keydown", function (event) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    toggleTheme();
+  });
 }
 
 function setStatus(id, message, isError = false) {
@@ -723,8 +761,8 @@ function renderAdminUsers() {
     return;
   }
   list.innerHTML = state.adminUsers.map((user) => {
-    const key = user.openId || user.userId || user.unionId;
-    return '<article class="api-item"><div><strong>' + escapeHtml(user.name || key || "未命名管理员") + '</strong><div class="muted">Open ID：' + escapeHtml(user.openId || "-") + '</div><div class="muted">User ID：' + escapeHtml(user.userId || "-") + '</div><div class="muted">邮箱：' + escapeHtml(user.email || "-") + '</div><div class="muted">角色：' + (user.isSuperAdmin === false ? "普通管理员" : "超级管理员") + '</div></div><div class="api-actions"><button class="compact danger" type="button" data-delete-admin="' + escapeHtml(key) + '">移除</button></div></article>';
+    const key = user.id;
+    return '<article class="api-item"><div><strong>' + escapeHtml(user.name || user.openId || user.userId || user.unionId || "未命名管理员") + '</strong><div class="muted">Open ID：' + escapeHtml(user.openId || "-") + '</div><div class="muted">User ID：' + escapeHtml(user.userId || "-") + '</div><div class="muted">邮箱：' + escapeHtml(user.email || "-") + '</div><div class="muted">角色：' + (user.isSuperAdmin === false ? "普通管理员" : "超级管理员") + '</div></div><div class="api-actions"><button class="compact danger" type="button" data-delete-admin="' + escapeHtml(key) + '">移除</button></div></article>';
   }).join("");
 }
 
@@ -795,19 +833,13 @@ async function saveAdminUser(event) {
     const data = await request("/api/admin/admin-users", {
       method: "POST",
       body: JSON.stringify({
-        name: $("adminUserName").value,
-        openId: $("adminUserOpenId").value,
-        userId: $("adminUserUserId").value,
-        unionId: $("adminUserUnionId").value,
-        email: $("adminUserEmail").value,
-        isSuperAdmin: $("adminUserSuperAdmin").checked
+        name: $("adminUserName").value
       })
     });
     state.adminUsers = data.adminUsers || [];
     renderAdminUsers();
     $("adminUserStatus").textContent = "管理员名单已更新。";
     $("adminUserForm").reset();
-    $("adminUserSuperAdmin").checked = true;
   } catch (error) {
     $("adminUserStatus").textContent = error.message;
   }
@@ -849,8 +881,6 @@ async function checkAdminSessionAfterRedirect() {
 
 async function loadAdminConfig() {
   const data = await request("/api/admin/config");
-  $("currentUser").value = data.username || "";
-  $("nextUser").value = data.username || "";
   state.adminUsers = data.adminUsers || [];
   state.feishuAuth = data.feishuAuth || null;
   state.currentAdmin = data.currentAdmin || null;
@@ -1078,27 +1108,6 @@ async function deleteApi(id) {
     await loadModels();
   } catch (error) {
     setStatus("apiStatus", error.message, true);
-  }
-}
-
-async function changePassword(event) {
-  event.preventDefault();
-  setStatus("passwordStatus", "正在修改...");
-  try {
-    await request("/api/admin/password", {
-      method: "POST",
-      body: JSON.stringify({
-        currentUsername: $("currentUser").value.trim(),
-        currentPassword: $("currentPass").value,
-        nextUsername: $("nextUser").value.trim(),
-        nextPassword: $("nextPass").value
-      })
-    });
-    $("currentPass").value = "";
-    $("nextPass").value = "";
-    setStatus("passwordStatus", "修改成功，下次登录请使用新账号密码。");
-  } catch (error) {
-    setStatus("passwordStatus", error.message, true);
   }
 }
 
@@ -1425,7 +1434,6 @@ $("adminUsersList").addEventListener("click", async (event) => {
 $("apiForm").addEventListener("submit", saveApi);
 $("llmApiForm").addEventListener("submit", saveLlmApi);
 $("newLlmApiBtn").addEventListener("click", clearLlmApiForm);
-$("passwordForm").addEventListener("submit", changePassword);
 $("newApiBtn").addEventListener("click", clearApiForm);
 $("refreshRecordsBtn").addEventListener("click", loadRecords);
 $("applyFiltersBtn").addEventListener("click", () => renderRecords(getFilteredRecords(state.records, "filterUser", "filterStart", "filterEnd"), "recordsList"));
@@ -1446,6 +1454,7 @@ $("qualitySelect").addEventListener("change", () => {
   state.quality = $("qualitySelect").value || "high";
 });
 
+initThemeToggle();
 syncAuthGatedButtons();
 loadAdminMeta().catch(() => {});
 checkAdminSessionAfterRedirect().catch(() => {});
