@@ -45,13 +45,47 @@ function getClientId() {
 
 function getStoredTheme() {
   var stored = localStorage.getItem(themeStorageKey);
-  return stored === "dark" || stored === "cyberpunk" ? stored : "light";
+  return stored === "dark" || stored === "cyberpunk" || stored === "matrix" ? stored : "light";
+}
+
+function ensureMatrixBackground() {
+  var bg = $("themeMatrixBg");
+  if (!bg || bg.dataset.ready === "true") return bg;
+  var reducedMotion = globalThis.matchMedia && globalThis.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var width = Math.max(globalThis.innerWidth || 0, document.documentElement.clientWidth || 0, 1280);
+  var columnCount = reducedMotion ? 14 : Math.min(30, Math.max(18, Math.floor(width / 56)));
+  var source = ["Battle", "Of", "Balls", "·", "球球", "大作战"].join("\n");
+  for (var i = 0; i < columnCount; i += 1) {
+    var stream = document.createElement("span");
+    stream.className = "matrix-stream";
+    var layer = i % 4;
+    var opacity = reducedMotion ? 0.24 : 0.2 + Math.random() * 0.28;
+    var duration = reducedMotion ? 22 : 12 + Math.random() * 7;
+    stream.style.left = (i / columnCount) * 100 + "%";
+    stream.style.setProperty("--stream-opacity", opacity.toFixed(2));
+    stream.style.setProperty("--stream-scale", (layer === 0 ? 1.08 : layer === 1 ? 1 : layer === 2 ? 0.92 : 0.84).toFixed(2));
+    stream.style.setProperty("--stream-glow", layer === 0 ? "0 0 8px rgba(76, 255, 100, 0.22)" : layer === 1 ? "0 0 6px rgba(76, 255, 100, 0.16)" : "none");
+    stream.style.animationDelay = (Math.random() * -18).toFixed(2) + "s";
+    stream.style.animationDuration = duration.toFixed(2) + "s";
+    stream.textContent = source;
+    bg.appendChild(stream);
+  }
+  bg.dataset.ready = "true";
+  return bg;
+}
+
+function disposeMatrixBackground() {
+  var bg = $("themeMatrixBg");
+  if (!bg) return;
+  bg.classList.remove("is-active");
+  bg.textContent = "";
+  delete bg.dataset.ready;
 }
 
 function updateThemeToggleIcon(theme) {
   const btn = $("themeToggleBtn");
   if (!btn) return;
-  var labels = { light: "浅色主题", dark: "深色主题", cyberpunk: "赛博朋克主题" };
+  var labels = { light: "浅色主题", dark: "深色主题", cyberpunk: "赛博朋克主题", matrix: "矩阵主题" };
   btn.dataset.theme = theme;
   btn.setAttribute("aria-label", labels[theme] || labels.light);
   btn.setAttribute("title", labels[theme] || labels.light);
@@ -60,6 +94,12 @@ function updateThemeToggleIcon(theme) {
 function applyTheme(theme) {
   document.documentElement.setAttribute("data-theme", theme);
   updateThemeToggleIcon(theme);
+  if (theme === "matrix") {
+    var bg = ensureMatrixBackground();
+    if (bg) bg.classList.add("is-active");
+  } else {
+    disposeMatrixBackground();
+  }
 }
 
 function initThemeToggle() {
