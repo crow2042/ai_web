@@ -728,13 +728,6 @@ function renderAdminUsers() {
   }).join("");
 }
 
-function syncFeishuLoginView() {
-  const enabled = state.feishuAuth?.enabled !== false;
-  $("feishuLoginBtn").classList.toggle("hidden", !enabled);
-  $("legacyLoginFields").classList.toggle("hidden", enabled);
-  $("legacyLoginBtn").classList.toggle("hidden", enabled);
-}
-
 function syncAdminVisibility() {
   const isAdmin = Boolean(state.currentAdmin?.isAdmin || state.currentAdmin?.isSuperAdmin);
   const isSuperAdmin = Boolean(state.currentAdmin) && state.currentAdmin.isSuperAdmin !== false && isAdmin;
@@ -742,38 +735,9 @@ function syncAdminVisibility() {
   $("adminUsersSection").classList.toggle("hidden", !isSuperAdmin);
 }
 
-async function loginAdmin(event) {
-  event.preventDefault();
-  setStatus("loginStatus", "正在登录...");
-  try {
-    await request("/api/admin/login", {
-      method: "POST",
-      body: JSON.stringify({ username: $("adminUser").value.trim(), password: $("adminPass").value })
-    });
-    sessionStorage.setItem(adminSessionKey, "1");
-    state.loggedIn = true;
-    state.visitor = $("adminUser").value.trim();
-    $("generateBtn").disabled = !state.models.length;
-    $("generateBtn").title = "";
-    showAdminPanel();
-    setStatus("loginStatus", "");
-    syncTopbarLoginState();
-    loadAdminConfig().catch((error) => {
-      sessionStorage.removeItem(adminSessionKey);
-      showAdminLogin();
-      setStatus("loginStatus", error.message, true);
-    });
-    loadLlmAdminConfig().catch(() => {});
-    loadRecords().catch(() => {});
-  } catch (error) {
-    setStatus("loginStatus", error.message, true);
-  }
-}
-
 async function loadAdminMeta() {
   const data = await request("/api/admin/feishu/meta");
   state.feishuAuth = data.feishuAuth || null;
-  syncFeishuLoginView();
 }
 
 async function beginFeishuLogin() {
@@ -800,8 +764,7 @@ async function logoutAdmin() {
   state.visitor = "";
   $("generateBtn").disabled = true;
   $("generateBtn").title = "请先登录飞书~";
-  showAdminLogin();
-  setStatus("loginStatus", "已退出管理员登录。");
+  $("adminDialog").close();
   syncTopbarLoginState();
 }
 
@@ -897,7 +860,6 @@ async function loadAdminConfig() {
   $("feishuRedirectUri").value = state.feishuAuth?.redirectUri || "";
   renderCurrentAdmin();
   renderAdminUsers();
-  syncFeishuLoginView();
   syncAdminVisibility();
   renderApis(data.apis || []);
   if (!$("recordsList").children.length) {
@@ -1132,8 +1094,6 @@ async function changePassword(event) {
         nextPassword: $("nextPass").value
       })
     });
-    $("adminUser").value = $("nextUser").value.trim();
-    $("adminPass").value = "";
     $("currentPass").value = "";
     $("nextPass").value = "";
     setStatus("passwordStatus", "修改成功，下次登录请使用新账号密码。");
@@ -1445,7 +1405,6 @@ $("bannerLoginBtn").addEventListener("click", beginFeishuLogin);
 $("closeLoginFailBtn").addEventListener("click", () => $("loginFailDialog").close());
 $("settingsBtn").addEventListener("click", openAdmin);
 $("closeAdminBtn").addEventListener("click", () => $("adminDialog").close());
-$("loginForm").addEventListener("submit", loginAdmin);
 $("feishuLoginBtn").addEventListener("click", beginFeishuLogin);
 $("adminLogoutBtn").addEventListener("click", logoutAdmin);
 $("feishuConfigForm").addEventListener("submit", saveFeishuConfig);
