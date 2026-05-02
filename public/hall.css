@@ -20,6 +20,17 @@
   --shadow: 0 24px 64px rgba(0, 0, 0, 0.46);
 }
 
+[data-theme="cyberpunk"] {
+  --bg: #08080f;
+  --paper: rgba(12, 12, 22, 0.94);
+  --ink: #d8d8e8;
+  --muted: #6a6a88;
+  --line: rgba(0, 212, 255, 0.1);
+  --accent: #00d4ff;
+  --accent-strong: #00b8de;
+  --shadow: 0 0 20px rgba(0, 212, 255, 0.07);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -41,6 +52,10 @@ body {
     radial-gradient(circle at 50% -10%, rgba(240, 207, 146, 0.08), transparent 34%),
     radial-gradient(circle at 88% 12%, rgba(201, 164, 93, 0.07), transparent 28%),
     linear-gradient(180deg, #111115 0%, #0d0d11 42%, #0a0a0d 100%);
+}
+
+[data-theme="cyberpunk"] body {
+  background: #08080f;
 }
 
 body::before {
@@ -81,6 +96,13 @@ body::before {
   mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.2), transparent 82%);
 }
 
+[data-theme="cyberpunk"] body::before {
+  background-image:
+    linear-gradient(rgba(0, 212, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 212, 255, 0.03) 1px, transparent 1px);
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.4), transparent 70%);
+}
+
 [data-theme="dark"] .tool-card {
   background: linear-gradient(180deg, rgba(28, 28, 32, 0.96), rgba(22, 22, 26, 0.96));
   border: 1px solid rgba(214, 188, 132, 0.08);
@@ -114,6 +136,167 @@ body::before {
   border: 1px solid rgba(214, 188, 132, 0.16);
 }
 
+[data-theme="cyberpunk"] .hall-shell {
+  position: relative;
+}
+
+[data-theme="cyberpunk"] .hall-shell::before {
+  content: "";
+  position: absolute;
+  inset: 18px 0 auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(0, 212, 255, 0.36), rgba(154, 92, 255, 0.3), transparent);
+  pointer-events: none;
+}
+
+[data-theme="cyberpunk"] .hall-hero {
+  position: relative;
+  padding: 34px 10px 42px;
+}
+
+[data-theme="cyberpunk"] .hall-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(0, 212, 255, 0.08);
+  border-radius: 28px;
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.04), rgba(154, 92, 255, 0.03));
+  box-shadow: inset 0 0 0 1px rgba(154, 92, 255, 0.02), 0 0 30px rgba(0, 212, 255, 0.04);
+  pointer-events: none;
+}
+
+[data-theme="cyberpunk"] .eyebrow,
+[data-theme="cyberpunk"] .tool-kicker {
+  color: var(--accent);
+  animation: cyber-flicker-hall 6s ease-in-out infinite;
+}
+
+[data-theme="cyberpunk"] .hall-hero h1,
+[data-theme="cyberpunk"] .tool-card h2 {
+  font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+[data-theme="cyberpunk"] .hall-hero h1 {
+  color: #effcff;
+  animation: cyber-glitch-hall 5s ease-in-out infinite;
+}
+
+[data-theme="cyberpunk"] .hall-hero p:last-child {
+  color: #88a9bb;
+}
+
+[data-theme="cyberpunk"] .tool-grid.single {
+  position: relative;
+}
+
+[data-theme="cyberpunk"] .tool-grid.single::before {
+  content: "SYSTEM LINK: IMAGE WORKSPACE";
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 10px;
+  color: rgba(0, 212, 255, 0.6);
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  background: #08080f;
+}
+
+[data-theme="cyberpunk"] .tool-card {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(12, 12, 22, 0.98), rgba(9, 10, 20, 0.98));
+  border: 1px solid rgba(0, 212, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(154, 92, 255, 0.04), 0 0 24px rgba(0, 212, 255, 0.06);
+}
+
+[data-theme="cyberpunk"] .tool-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.08), transparent 38%, rgba(154, 92, 255, 0.08) 100%);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+[data-theme="cyberpunk"] .tool-card::after {
+  content: "";
+  position: absolute;
+  inset: 14px;
+  border: 1px solid rgba(0, 212, 255, 0.08);
+  border-radius: 18px;
+  pointer-events: none;
+}
+
+[data-theme="cyberpunk"] .tool-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(0, 212, 255, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(154, 92, 255, 0.06), 0 0 34px rgba(0, 212, 255, 0.12);
+}
+
+[data-theme="cyberpunk"] .tool-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+[data-theme="cyberpunk"] .tool-mark {
+  background: linear-gradient(180deg, rgba(0, 212, 255, 0.12), rgba(154, 92, 255, 0.08));
+  border: 1px solid rgba(0, 212, 255, 0.14);
+  color: #baf7ff;
+  box-shadow: 0 0 18px rgba(0, 212, 255, 0.08);
+}
+
+[data-theme="cyberpunk"] .tool-card h2 {
+  color: #effcff;
+  animation: cyber-glitch-hall 7s ease-in-out infinite;
+}
+
+[data-theme="cyberpunk"] .tool-card p:last-child {
+  color: #88a9bb;
+}
+
+[data-theme="cyberpunk"] .tool-card strong {
+  color: #08080f;
+  background: linear-gradient(90deg, #00d4ff 0%, #7fe8ff 45%, #8c6dff 100%);
+  box-shadow: 0 0 16px rgba(0, 212, 255, 0.22);
+}
+
+[data-theme="cyberpunk"] .tool-card strong:hover {
+  background: linear-gradient(90deg, #00b8de 0%, #74def7 45%, #7c5ff3 100%);
+}
+
+[data-theme="cyberpunk"] .login-banner {
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.08), rgba(154, 92, 255, 0.05));
+  border: 1px solid rgba(0, 212, 255, 0.12);
+  box-shadow: 0 0 20px rgba(0, 212, 255, 0.05);
+}
+
+[data-theme="cyberpunk"] .login-banner span {
+  color: #d9f9ff;
+}
+
+[data-theme="cyberpunk"] .login-banner button,
+[data-theme="cyberpunk"] .login-fail-dialog button {
+  color: #08080f;
+  background: linear-gradient(90deg, #00d4ff 0%, #80ebff 100%);
+  box-shadow: 0 0 16px rgba(0, 212, 255, 0.2);
+}
+
+[data-theme="cyberpunk"] .login-banner button:hover,
+[data-theme="cyberpunk"] .login-fail-dialog button:hover {
+  background: linear-gradient(90deg, #00b8de 0%, #6ee1f7 100%);
+}
+
+[data-theme="cyberpunk"] .login-fail-dialog {
+  background: rgba(12, 12, 22, 0.98);
+  color: var(--ink);
+  border: 1px solid rgba(0, 212, 255, 0.12);
+  box-shadow: 0 0 28px rgba(0, 212, 255, 0.08);
+}
+
 [data-theme="dark"] .theme-toggle-hall {
   border-color: rgba(214, 188, 132, 0.14);
   background: linear-gradient(180deg, rgba(30, 30, 34, 0.96), rgba(22, 22, 26, 0.98));
@@ -135,17 +318,59 @@ body::before {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
-[data-theme="dark"] .theme-toggle-hall[data-theme="light"] .hall-face-light {
+[data-theme="dark"] .theme-toggle-hall[data-theme="light"] .hall-face-light,
+[data-theme="dark"] .theme-toggle-hall[data-theme="cyberpunk"] .hall-face-cyberpunk {
   background: linear-gradient(180deg, rgba(66, 56, 38, 0.92), rgba(44, 39, 31, 0.96));
   color: var(--accent);
   border: 1px solid rgba(214, 188, 132, 0.12);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
+[data-theme="cyberpunk"] .theme-toggle-hall {
+  border-color: rgba(0, 212, 255, 0.1);
+  background: rgba(12, 12, 22, 0.92);
+  box-shadow: 0 0 8px rgba(0, 212, 255, 0.05);
+}
+
+[data-theme="cyberpunk"] .theme-toggle-hall:hover {
+  box-shadow: 0 0 14px rgba(0, 212, 255, 0.1);
+}
+
+[data-theme="cyberpunk"] .hall-face {
+  color: rgba(0, 212, 255, 0.3);
+}
+
+[data-theme="cyberpunk"] .theme-toggle-hall[data-theme="light"] .hall-face-light,
+[data-theme="cyberpunk"] .theme-toggle-hall[data-theme="dark"] .hall-face-dark,
+[data-theme="cyberpunk"] .theme-toggle-hall[data-theme="cyberpunk"] .hall-face-cyberpunk {
+  background: linear-gradient(180deg, rgba(0, 212, 255, 0.1), rgba(154, 92, 255, 0.06));
+  color: var(--accent);
+  border: 1px solid rgba(0, 212, 255, 0.15);
+  box-shadow: 0 0 8px rgba(0, 212, 255, 0.1);
+}
+
 .hall-hero h1 {
   margin: 0;
   font-size: 72px;
   line-height: 0.95;
+}
+
+[data-theme="cyberpunk"] .hall-hero h1 {
+  animation: cyber-glitch-hall 5s ease-in-out infinite;
+}
+
+[data-theme="cyberpunk"] .eyebrow,
+[data-theme="cyberpunk"] .tool-kicker {
+  color: var(--accent);
+  animation: cyber-flicker-hall 6s ease-in-out infinite;
+}
+
+@keyframes cyber-glitch-hall {
+  0%, 100% { text-shadow: none; }
+  7% { text-shadow: 3px 0 #9a5cff, -3px 0 #00d4ff; }
+  10% { text-shadow: none; }
+  13% { text-shadow: -2px 0 #9a5cff, 2px 0 #00d4ff; }
+  16% { text-shadow: none; }
 }
 
 .hall-hero p:last-child {
@@ -206,6 +431,10 @@ body::before {
 .tool-card h2 {
   margin: 0;
   font-size: 32px;
+}
+
+[data-theme="cyberpunk"] .tool-card h2 {
+  animation: cyber-glitch-hall 7s ease-in-out infinite;
 }
 
 .tool-card p:last-child {
@@ -299,9 +528,9 @@ body::before {
   right: 24px;
   z-index: 10;
   display: inline-grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   align-items: center;
-  width: 80px;
+  width: 120px;
   height: 40px;
   padding: 4px;
   border: 1px solid var(--line);
@@ -335,7 +564,8 @@ body::before {
 }
 
 .theme-toggle-hall[data-theme="light"] .hall-face-light,
-.theme-toggle-hall[data-theme="dark"] .hall-face-dark {
+.theme-toggle-hall[data-theme="dark"] .hall-face-dark,
+.theme-toggle-hall[data-theme="cyberpunk"] .hall-face-cyberpunk {
   background: var(--paper);
   color: var(--accent-strong);
   border: 1px solid var(--line);

@@ -44,18 +44,17 @@ function getClientId() {
 }
 
 function getStoredTheme() {
-  return localStorage.getItem(themeStorageKey) === "dark" ? "dark" : "light";
+  var stored = localStorage.getItem(themeStorageKey);
+  return stored === "dark" || stored === "cyberpunk" ? stored : "light";
 }
 
 function updateThemeToggleIcon(theme) {
   const btn = $("themeToggleBtn");
   if (!btn) return;
-  const isDark = theme === "dark";
-  const label = isDark ? "切换到浅色主题" : "切换到深色主题";
+  var labels = { light: "浅色主题", dark: "深色主题", cyberpunk: "赛博朋克主题" };
   btn.dataset.theme = theme;
-  btn.setAttribute("aria-pressed", isDark ? "true" : "false");
-  btn.setAttribute("aria-label", label);
-  btn.setAttribute("title", label);
+  btn.setAttribute("aria-label", labels[theme] || labels.light);
+  btn.setAttribute("title", labels[theme] || labels.light);
 }
 
 function applyTheme(theme) {
@@ -67,16 +66,22 @@ function initThemeToggle() {
   applyTheme(getStoredTheme());
   const btn = $("themeToggleBtn");
   if (!btn) return;
-  const toggleTheme = () => {
-    const nextTheme = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
-    localStorage.setItem(themeStorageKey, nextTheme);
-    applyTheme(nextTheme);
-  };
-  btn.addEventListener("click", toggleTheme);
+  btn.addEventListener("click", function (e) {
+    var face = e.target.closest("[data-set-theme]");
+    if (!face) return;
+    var theme = face.dataset.setTheme;
+    if (!theme) return;
+    localStorage.setItem(themeStorageKey, theme);
+    applyTheme(theme);
+  });
   btn.addEventListener("keydown", function (event) {
     if (event.key !== "Enter" && event.key !== " ") return;
+    var face = event.target.closest("[data-set-theme]");
+    if (!face) return;
     event.preventDefault();
-    toggleTheme();
+    var theme = face.dataset.setTheme;
+    localStorage.setItem(themeStorageKey, theme);
+    applyTheme(theme);
   });
 }
 

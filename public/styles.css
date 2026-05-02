@@ -32,6 +32,23 @@
   --soft-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
 }
 
+[data-theme="cyberpunk"] {
+  color-scheme: dark;
+  --bg: #08080f;
+  --panel: rgba(12, 12, 22, 0.94);
+  --panel-strong: #10101e;
+  --text: #d8d8e8;
+  --muted: #6a6a88;
+  --line: rgba(0, 212, 255, 0.1);
+  --primary: #00d4ff;
+  --primary-dark: #00b8de;
+  --accent: #9a5cff;
+  --danger: #ff4466;
+  --warm: #ff8844;
+  --shadow: 0 0 20px rgba(0, 212, 255, 0.07);
+  --soft-shadow: 0 0 10px rgba(0, 212, 255, 0.04);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -53,6 +70,10 @@ body {
     radial-gradient(circle at 50% -10%, rgba(240, 207, 146, 0.08), transparent 34%),
     radial-gradient(circle at 88% 12%, rgba(201, 164, 93, 0.07), transparent 28%),
     linear-gradient(180deg, #111115 0%, #0d0d11 42%, #0a0a0d 100%);
+}
+
+[data-theme="cyberpunk"] body {
+  background: #08080f;
 }
 
 button,
@@ -342,6 +363,255 @@ button:disabled {
   color: var(--primary);
 }
 
+[data-theme="cyberpunk"] .topbar {
+  border-bottom: 1px solid rgba(0, 212, 255, 0.08);
+  background: rgba(8, 8, 15, 0.9);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 0 16px rgba(0, 212, 255, 0.04);
+}
+
+[data-theme="cyberpunk"] .topbar strong,
+[data-theme="cyberpunk"] .section-title h2,
+[data-theme="cyberpunk"] .reference-head > span,
+[data-theme="cyberpunk"] .prompt-head > span {
+  font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+[data-theme="cyberpunk"] .generator,
+[data-theme="cyberpunk"] .output,
+[data-theme="cyberpunk"] .side-records,
+[data-theme="cyberpunk"] .admin-card {
+  background: rgba(12, 12, 22, 0.94);
+  border: 1px solid rgba(0, 212, 255, 0.08);
+  box-shadow: 0 0 16px rgba(0, 212, 255, 0.04);
+}
+
+[data-theme="cyberpunk"] .primary {
+  color: #08080f;
+  background: var(--primary);
+  box-shadow: 0 0 12px rgba(0, 212, 255, 0.2);
+}
+
+[data-theme="cyberpunk"] .primary:hover {
+  background: var(--primary-dark);
+  box-shadow: 0 0 18px rgba(0, 212, 255, 0.28);
+}
+
+[data-theme="cyberpunk"] .icon-button,
+[data-theme="cyberpunk"] .nav-link,
+[data-theme="cyberpunk"] button:not(.primary):not(.theme-toggle) {
+  background: linear-gradient(180deg, rgba(16, 18, 34, 0.96), rgba(10, 11, 24, 0.96));
+  color: #b9f7ff;
+  border: 1px solid rgba(0, 212, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(154, 92, 255, 0.05), 0 0 14px rgba(0, 212, 255, 0.06);
+}
+
+[data-theme="cyberpunk"] .icon-button:hover,
+[data-theme="cyberpunk"] .nav-link:hover,
+[data-theme="cyberpunk"] button:not(.primary):not(.theme-toggle):hover {
+  background: linear-gradient(180deg, rgba(20, 24, 42, 0.98), rgba(14, 16, 30, 0.98));
+  color: #e6fbff;
+  box-shadow: inset 0 0 0 1px rgba(154, 92, 255, 0.08), 0 0 18px rgba(0, 212, 255, 0.12);
+}
+
+[data-theme="cyberpunk"] .back-link {
+  background: rgba(0, 212, 255, 0.06);
+  color: var(--primary);
+}
+
+[data-theme="cyberpunk"] input,
+[data-theme="cyberpunk"] textarea,
+[data-theme="cyberpunk"] select,
+[data-theme="cyberpunk"] .field input,
+[data-theme="cyberpunk"] .field select,
+[data-theme="cyberpunk"] .field textarea,
+[data-theme="cyberpunk"] .generator .prompt-field textarea {
+  background: linear-gradient(180deg, rgba(10, 12, 24, 0.96), rgba(8, 10, 20, 0.98));
+  border-color: rgba(0, 212, 255, 0.14);
+  color: #dff7ff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), inset 0 0 0 1px rgba(154, 92, 255, 0.03);
+}
+
+[data-theme="cyberpunk"] input::placeholder,
+[data-theme="cyberpunk"] textarea::placeholder {
+  color: rgba(131, 211, 224, 0.56);
+}
+
+[data-theme="cyberpunk"] input:focus,
+[data-theme="cyberpunk"] textarea:focus,
+[data-theme="cyberpunk"] select:focus {
+  border-color: rgba(0, 212, 255, 0.4);
+  box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.08), 0 0 18px rgba(0, 212, 255, 0.12);
+}
+
+[data-theme="cyberpunk"] .section-title span,
+[data-theme="cyberpunk"] .status,
+[data-theme="cyberpunk"] .field-note,
+[data-theme="cyberpunk"] .upload-zone em,
+[data-theme="cyberpunk"] .placeholder,
+[data-theme="cyberpunk"] .reference-thumb small,
+[data-theme="cyberpunk"] #modelHint {
+  color: #7ea8b8;
+}
+
+[data-theme="cyberpunk"] label,
+[data-theme="cyberpunk"] .switch-label,
+[data-theme="cyberpunk"] .prompt-head span,
+[data-theme="cyberpunk"] .reference-field,
+[data-theme="cyberpunk"] .right-controls > label,
+[data-theme="cyberpunk"] .field > span {
+  color: #a9f2ff;
+}
+
+[data-theme="cyberpunk"] .left-params,
+[data-theme="cyberpunk"] .right-controls,
+[data-theme="cyberpunk"] .generator .prompt-field,
+[data-theme="cyberpunk"] .record-filters,
+[data-theme="cyberpunk"] .reference-field {
+  background: linear-gradient(180deg, rgba(10, 12, 24, 0.84), rgba(7, 9, 20, 0.88));
+  border: 1px solid rgba(0, 212, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(154, 92, 255, 0.03);
+}
+
+[data-theme="cyberpunk"] .login-banner {
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.06), rgba(154, 92, 255, 0.05));
+  border: 1px solid rgba(0, 212, 255, 0.1);
+}
+
+[data-theme="cyberpunk"] .segmented-switch {
+  border: 1px solid rgba(0, 212, 255, 0.08);
+  background: rgba(8, 8, 15, 0.8);
+  box-shadow: none;
+}
+
+[data-theme="cyberpunk"] .slider-switch .switch-track {
+  background: rgba(0, 212, 255, 0.05);
+}
+
+[data-theme="cyberpunk"] .slider-switch .switch-shadow {
+  box-shadow: 0 0 18px rgba(0, 212, 255, 0.12);
+}
+
+[data-theme="cyberpunk"] .slider-switch .switch-thumb,
+[data-theme="cyberpunk"] .task-mode-switch .switch-btn.is-active {
+  background: linear-gradient(180deg, rgba(0, 212, 255, 0.16), rgba(154, 92, 255, 0.12));
+  border: 1px solid rgba(0, 212, 255, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 18px rgba(0, 212, 255, 0.12);
+}
+
+[data-theme="cyberpunk"] .switch-btn.is-active,
+[data-theme="cyberpunk"] .task-mode-switch .switch-btn.is-active {
+  color: #effcff;
+}
+
+[data-theme="cyberpunk"] .switch-btn:not(.is-active) {
+  color: rgba(169, 242, 255, 0.72);
+}
+
+[data-theme="cyberpunk"] .upload-zone {
+  border-color: rgba(0, 212, 255, 0.26);
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.08), rgba(154, 92, 255, 0.08));
+}
+
+[data-theme="cyberpunk"] .upload-zone:hover,
+[data-theme="cyberpunk"] .upload-zone.dragging {
+  border-color: rgba(0, 212, 255, 0.44);
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.12), rgba(154, 92, 255, 0.14));
+  box-shadow: 0 0 24px rgba(0, 212, 255, 0.12);
+}
+
+[data-theme="cyberpunk"] .upload-zone strong {
+  color: #e9fcff;
+}
+
+[data-theme="cyberpunk"] .upload-zone em.upload-note {
+  background: rgba(255, 136, 68, 0.12);
+  color: #ffb27a;
+}
+
+[data-theme="cyberpunk"] .image-box {
+  border-color: rgba(0, 212, 255, 0.2);
+  background:
+    linear-gradient(45deg, rgba(0, 212, 255, 0.04) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(0, 212, 255, 0.04) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(154, 92, 255, 0.05) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(154, 92, 255, 0.05) 75%),
+    rgba(9, 11, 20, 0.98);
+}
+
+[data-theme="cyberpunk"] .output-item,
+[data-theme="cyberpunk"] .preview-item,
+[data-theme="cyberpunk"] .loading-card,
+[data-theme="cyberpunk"] .api-item,
+[data-theme="cyberpunk"] .record-item,
+[data-theme="cyberpunk"] .mode-check {
+  background: rgba(12, 12, 22, 0.94);
+  border-color: rgba(0, 212, 255, 0.06);
+  box-shadow: 0 0 8px rgba(0, 212, 255, 0.03);
+}
+
+[data-theme="cyberpunk"] .mode-check:has(input:checked) {
+  border-color: rgba(0, 212, 255, 0.3);
+  background: rgba(0, 212, 255, 0.05);
+  color: var(--primary);
+  box-shadow: 0 0 10px rgba(0, 212, 255, 0.08);
+}
+
+[data-theme="cyberpunk"] .admin-dialog,
+[data-theme="cyberpunk"] .preview-dialog,
+[data-theme="cyberpunk"] .login-fail-dialog,
+[data-theme="cyberpunk"] .modal-panel {
+  background: rgba(12, 12, 22, 0.98);
+  color: var(--text);
+  border: 1px solid rgba(0, 212, 255, 0.08);
+}
+
+[data-theme="cyberpunk"] .admin-dialog::backdrop,
+[data-theme="cyberpunk"] .preview-dialog::backdrop {
+  background: rgba(4, 4, 8, 0.82);
+}
+
+@keyframes cyber-scan {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(4px); }
+}
+
+@keyframes cyber-glitch {
+  0%, 100% { text-shadow: none; transform: translate(0); }
+  7% { text-shadow: 2px 0 #9a5cff, -2px 0 #00d4ff; transform: translate(0); }
+  10% { text-shadow: none; transform: translate(-1px, 0); }
+  13% { text-shadow: -2px 0 #9a5cff, 2px 0 #00d4ff; transform: translate(1px, 0); }
+  16% { text-shadow: none; transform: translate(0); }
+}
+
+@keyframes cyber-flicker {
+  0%, 100% { opacity: 1; }
+  92% { opacity: 1; }
+  93% { opacity: 0.8; }
+  94% { opacity: 1; }
+  96% { opacity: 0.9; }
+  97% { opacity: 1; }
+}
+
+@keyframes cyber-border-glow {
+  0%, 100% { border-color: rgba(0, 212, 255, 0.08); }
+  50% { border-color: rgba(154, 92, 255, 0.14); }
+}
+
+/* cyberpunk subtle border pulse on panels (no flicker) */
+[data-theme="cyberpunk"] .generator,
+[data-theme="cyberpunk"] .output {
+  animation: cyber-border-glow 4s ease-in-out infinite;
+}
+
+/* cyberpunk title glitch */
+[data-theme="cyberpunk"] .topbar strong {
+  animation: cyber-glitch 5s ease-in-out infinite;
+}
+
 .topbar span {
   display: inline-block;
   margin-top: 4px;
@@ -375,11 +645,11 @@ button:disabled {
 
 .theme-toggle {
   display: inline-grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   align-items: center;
   align-self: center;
-  width: 64px;
-  min-width: 64px;
+  width: 96px;
+  min-width: 96px;
   height: 32px;
   padding: 3px;
   border: 1px solid rgba(124, 77, 255, 0.16);
@@ -414,7 +684,8 @@ button:disabled {
 }
 
 .theme-toggle[data-theme="light"] .theme-toggle-face-light,
-.theme-toggle[data-theme="dark"] .theme-toggle-face-dark {
+.theme-toggle[data-theme="dark"] .theme-toggle-face-dark,
+.theme-toggle[data-theme="cyberpunk"] .theme-toggle-face-cyberpunk {
   background: linear-gradient(135deg, rgba(237, 227, 255, 0.98), rgba(255, 241, 236, 0.98));
   color: var(--primary-dark);
   border: 1px solid rgba(124, 77, 255, 0.12);
@@ -442,11 +713,35 @@ button:disabled {
 }
 
 [data-theme="dark"] .theme-toggle[data-theme="light"] .theme-toggle-face-light,
-[data-theme="dark"] .theme-toggle[data-theme="dark"] .theme-toggle-face-dark {
+[data-theme="dark"] .theme-toggle[data-theme="dark"] .theme-toggle-face-dark,
+[data-theme="dark"] .theme-toggle[data-theme="cyberpunk"] .theme-toggle-face-cyberpunk {
   background: linear-gradient(180deg, rgba(66, 56, 38, 0.92), rgba(44, 39, 31, 0.96));
   color: var(--primary);
   border: 1px solid rgba(214, 188, 132, 0.12);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="cyberpunk"] .theme-toggle {
+  border-color: rgba(0, 212, 255, 0.1);
+  background: rgba(12, 12, 22, 0.92);
+  box-shadow: 0 0 8px rgba(0, 212, 255, 0.05);
+}
+
+[data-theme="cyberpunk"] .theme-toggle:hover {
+  box-shadow: 0 0 14px rgba(0, 212, 255, 0.1);
+}
+
+[data-theme="cyberpunk"] .theme-toggle-face {
+  color: rgba(0, 212, 255, 0.3);
+}
+
+[data-theme="cyberpunk"] .theme-toggle[data-theme="light"] .theme-toggle-face-light,
+[data-theme="cyberpunk"] .theme-toggle[data-theme="dark"] .theme-toggle-face-dark,
+[data-theme="cyberpunk"] .theme-toggle[data-theme="cyberpunk"] .theme-toggle-face-cyberpunk {
+  background: linear-gradient(180deg, rgba(0, 212, 255, 0.1), rgba(154, 92, 255, 0.06));
+  color: var(--primary);
+  border: 1px solid rgba(0, 212, 255, 0.15);
+  box-shadow: 0 0 8px rgba(0, 212, 255, 0.1);
 }
 
 .topbar-actions {

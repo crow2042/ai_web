@@ -20,7 +20,7 @@
       </div>
       <div class="topbar-actions">
         <button class="theme-toggle" id="themeToggleBtn" type="button" aria-label="切换到深色主题" title="切换到深色主题">
-          <span class="theme-toggle-face theme-toggle-face-light" aria-hidden="true">
+          <span class="theme-toggle-face theme-toggle-face-light" data-set-theme="light" role="button" aria-hidden="true">
             <svg viewBox="0 0 24 24" class="theme-toggle-icon" focusable="false" aria-hidden="true">
               <circle cx="12" cy="12" r="5" fill="currentColor"></circle>
               <g stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -35,9 +35,19 @@
               </g>
             </svg>
           </span>
-          <span class="theme-toggle-face theme-toggle-face-dark" aria-hidden="true">
+          <span class="theme-toggle-face theme-toggle-face-dark" data-set-theme="dark" role="button" aria-hidden="true">
             <svg viewBox="0 0 24 24" class="theme-toggle-icon" focusable="false" aria-hidden="true">
               <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" fill="currentColor"></path>
+            </svg>
+          </span>
+          <span class="theme-toggle-face theme-toggle-face-cyberpunk" data-set-theme="cyberpunk" role="button" aria-hidden="true">
+            <svg viewBox="0 0 24 24" class="theme-toggle-icon" focusable="false" aria-hidden="true">
+              <rect x="10" y="1" width="4" height="4" rx="1" fill="currentColor" opacity="0.8"></rect>
+              <path d="M12 5 L12 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+              <rect x="5" y="7" width="14" height="13" rx="3" stroke="currentColor" stroke-width="1.6" fill="none"></rect>
+              <circle cx="9" cy="13" r="1.8" fill="currentColor"></circle>
+              <circle cx="15" cy="13" r="1.8" fill="currentColor"></circle>
+              <path d="M9 17.5 L15 17.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"></path>
             </svg>
           </span>
         </button>
