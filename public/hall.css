@@ -61,22 +61,28 @@
 
 .matrix-stream {
   position: absolute;
-  top: -32%;
+  top: -42%;
   display: block;
+  width: 1em;
   color: rgba(98, 255, 120, 0.45);
-  font-family: "Space Grotesk", "Noto Sans SC", monospace;
-  font-size: 14px;
-  line-height: 1.05;
+  font-family: "Cascadia Mono", Consolas, "Microsoft YaHei", monospace;
+  font-size: var(--stream-size, 14px);
+  line-height: 1.06;
   white-space: pre;
+  letter-spacing: 0;
+  text-align: center;
   opacity: var(--stream-opacity, 0.4);
   text-shadow: var(--stream-glow, none);
   animation: matrix-fall linear infinite;
   will-change: transform;
+  transform: translate3d(0, -14%, 0) scale(var(--stream-scale, 1));
+  backface-visibility: hidden;
+  contain: layout paint style;
 }
 
 @keyframes matrix-fall {
-  from { transform: translate3d(0, -16%, 0) scale(var(--stream-scale, 1)); }
-  to { transform: translate3d(0, 138vh, 0) scale(var(--stream-scale, 1)); }
+  from { transform: translate3d(0, -14%, 0) scale(var(--stream-scale, 1)); }
+  to { transform: translate3d(0, 140vh, 0) scale(var(--stream-scale, 1)); }
 }
 
 @keyframes matrix-glitch {
@@ -298,6 +304,52 @@ body::before {
     linear-gradient(90deg, rgba(255, 255, 255, 0.24) 1px, transparent 1px);
   background-size: 28px 28px;
   mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.34), transparent 82%);
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.42;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='680' height='300' viewBox='0 0 680 300'%3E%3Cg transform='rotate(-18 340 150)' fill='%232c2738' fill-opacity='0.052' font-family='Arial, Microsoft YaHei, sans-serif' font-size='24' font-weight='800' letter-spacing='1'%3E%3Ctext x='125' y='160'%3EBattle Of Balls · 球球大作战%3C/text%3E%3C/g%3E%3C/svg%3E");
+  background-size: 680px 300px;
+  background-repeat: repeat;
+}
+
+[data-theme="dark"] body::after {
+  opacity: 0.4;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='680' height='300' viewBox='0 0 680 300'%3E%3Cg transform='rotate(-18 340 150)' fill='%23f0cf92' fill-opacity='0.055' font-family='Arial, Microsoft YaHei, sans-serif' font-size='24' font-weight='800' letter-spacing='1'%3E%3Ctext x='125' y='160'%3EBattle Of Balls · 球球大作战%3C/text%3E%3C/g%3E%3C/svg%3E");
+}
+
+[data-theme="cyberpunk"] body::after {
+  opacity: 0.58;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='680' height='300' viewBox='0 0 680 300'%3E%3Cg transform='rotate(-18 340 150)' fill='%2300d4ff' fill-opacity='0.05' font-family='Arial, Microsoft YaHei, sans-serif' font-size='24' font-weight='800' letter-spacing='1'%3E%3Ctext x='125' y='160'%3EBattle Of Balls · 球球大作战%3C/text%3E%3C/g%3E%3C/svg%3E");
+  animation: cyber-watermark-glitch 3.2s steps(1, end) infinite;
+}
+
+[data-theme="matrix"] body::after {
+  content: none;
+}
+
+@keyframes cyber-watermark-glitch {
+  0%, 100% {
+    opacity: 0.46;
+    filter: none;
+  }
+  6%, 24%, 58% {
+    opacity: 0.42;
+    filter: contrast(1.25);
+  }
+  7%, 25%, 60% {
+    opacity: 0.38;
+    filter: hue-rotate(18deg) contrast(1.32);
+  }
+  9%, 27%, 62% {
+    opacity: 0.46;
+    filter: none;
+  }
 }
 
 .hall-shell {
@@ -598,7 +650,7 @@ body::before {
 }
 
 [data-theme="cyberpunk"] .hall-hero h1 {
-  animation: cyber-glitch-hall 5s ease-in-out infinite;
+  animation: cyber-glitch-hall 3.2s steps(1, end) infinite;
 }
 
 [data-theme="cyberpunk"] .eyebrow,
@@ -608,11 +660,52 @@ body::before {
 }
 
 @keyframes cyber-glitch-hall {
-  0%, 100% { text-shadow: none; }
-  7% { text-shadow: 3px 0 #9a5cff, -3px 0 #00d4ff; }
-  10% { text-shadow: none; }
-  13% { text-shadow: -2px 0 #9a5cff, 2px 0 #00d4ff; }
-  16% { text-shadow: none; }
+  0%, 100% {
+    transform: translate3d(0, 0, 0);
+    text-shadow: 0 0 10px rgba(0, 212, 255, 0.16);
+    filter: none;
+  }
+  6% {
+    transform: translate3d(3px, -1px, 0) skewX(-2deg);
+    text-shadow: 7px 0 #9a5cff, -7px 0 #00d4ff, 0 0 18px rgba(0, 212, 255, 0.32);
+    filter: contrast(1.35);
+  }
+  7% {
+    transform: translate3d(-4px, 1px, 0) skewX(2deg);
+    text-shadow: -8px 0 #ff58a8, 5px 0 #00d4ff, 0 0 22px rgba(154, 92, 255, 0.28);
+  }
+  9% {
+    transform: translate3d(0, 0, 0);
+    text-shadow: 0 0 10px rgba(0, 212, 255, 0.16);
+    filter: none;
+  }
+  24% {
+    transform: translate3d(-2px, 0, 0);
+    text-shadow: -5px 0 #9a5cff, 6px 0 #00d4ff, 0 0 20px rgba(0, 212, 255, 0.28);
+    filter: hue-rotate(18deg);
+  }
+  25% {
+    transform: translate3d(5px, 0, 0);
+    text-shadow: 6px 0 #ff58a8, -5px 0 #00d4ff;
+  }
+  27% {
+    transform: translate3d(0, 0, 0);
+    text-shadow: 0 0 10px rgba(0, 212, 255, 0.16);
+    filter: none;
+  }
+  58% {
+    transform: translate3d(4px, 1px, 0) skewX(1deg);
+    text-shadow: 10px 0 #9a5cff, -8px 0 #00d4ff, 0 0 24px rgba(0, 212, 255, 0.34);
+  }
+  60% {
+    transform: translate3d(-3px, -1px, 0) skewX(-1deg);
+    text-shadow: -7px 0 #ff58a8, 8px 0 #00d4ff;
+  }
+  62% {
+    transform: translate3d(0, 0, 0);
+    text-shadow: 0 0 10px rgba(0, 212, 255, 0.16);
+    filter: none;
+  }
 }
 
 .hall-hero p:last-child {

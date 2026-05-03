@@ -32,6 +32,22 @@
   --soft-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
 }
 
+[data-theme="cyberpunk"] {
+  color-scheme: dark;
+  --bg: #08080f;
+  --panel: rgba(12, 12, 22, 0.98);
+  --panel-strong: rgba(9, 10, 20, 0.98);
+  --text: #effcff;
+  --muted: #88a9bb;
+  --line: rgba(0, 212, 255, 0.14);
+  --primary: #00d4ff;
+  --primary-dark: #00b8de;
+  --accent: #00d4ff;
+  --danger: #ff5a7a;
+  --warm: #8c6dff;
+  --shadow: 0 0 24px rgba(0, 212, 255, 0.06);
+  --soft-shadow: 0 0 18px rgba(0, 212, 255, 0.04);
+}
 [data-theme="matrix"] {
   color-scheme: dark;
   --bg: #030804;
@@ -47,6 +63,22 @@
   --warm: #deff8d;
   --shadow: 0 10px 28px rgba(76, 255, 100, 0.1);
   --soft-shadow: 0 6px 18px rgba(76, 255, 100, 0.06);
+}
+
+[data-theme="cyberpunk"] body {
+  background: #08080f;
+}
+
+[data-theme="cyberpunk"] body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(0, 212, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 212, 255, 0.03) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.4), transparent 70%);
 }
 
 [data-theme="matrix"] body {
@@ -72,22 +104,28 @@
 
 .matrix-stream {
   position: absolute;
-  top: -32%;
+  top: -42%;
   display: block;
+  width: 1em;
   color: rgba(98, 255, 120, 0.45);
-  font-family: "Space Grotesk", "Noto Sans SC", monospace;
-  font-size: 14px;
-  line-height: 1.05;
+  font-family: "Cascadia Mono", Consolas, "Microsoft YaHei", monospace;
+  font-size: var(--stream-size, 14px);
+  line-height: 1.06;
   white-space: pre;
+  letter-spacing: 0;
+  text-align: center;
   opacity: var(--stream-opacity, 0.4);
   text-shadow: var(--stream-glow, none);
   animation: matrix-fall linear infinite;
   will-change: transform;
+  transform: translate3d(0, -14%, 0) scale(var(--stream-scale, 1));
+  backface-visibility: hidden;
+  contain: layout paint style;
 }
 
 @keyframes matrix-fall {
-  from { transform: translate3d(0, -16%, 0) scale(var(--stream-scale, 1)); }
-  to { transform: translate3d(0, 138vh, 0) scale(var(--stream-scale, 1)); }
+  from { transform: translate3d(0, -14%, 0) scale(var(--stream-scale, 1)); }
+  to { transform: translate3d(0, 140vh, 0) scale(var(--stream-scale, 1)); }
 }
 
 @keyframes matrix-glitch {
@@ -148,8 +186,59 @@ body {
   position: relative;
 }
 
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.42;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='680' height='300' viewBox='0 0 680 300'%3E%3Cg transform='rotate(-18 340 150)' fill='%232c2738' fill-opacity='0.052' font-family='Arial, Microsoft YaHei, sans-serif' font-size='24' font-weight='800' letter-spacing='1'%3E%3Ctext x='125' y='160'%3EBattle Of Balls · 球球大作战%3C/text%3E%3C/g%3E%3C/svg%3E");
+  background-size: 680px 300px;
+  background-repeat: repeat;
+}
+
+[data-theme="dark"] body::after {
+  opacity: 0.34;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='680' height='300' viewBox='0 0 680 300'%3E%3Cg transform='rotate(-18 340 150)' fill='%23f0cf92' fill-opacity='0.048' font-family='Arial, Microsoft YaHei, sans-serif' font-size='24' font-weight='800' letter-spacing='1'%3E%3Ctext x='125' y='160'%3EBattle Of Balls · 球球大作战%3C/text%3E%3C/g%3E%3C/svg%3E");
+}
+
+[data-theme="cyberpunk"] body::after {
+  opacity: 0.58;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='680' height='300' viewBox='0 0 680 300'%3E%3Cg transform='rotate(-18 340 150)' fill='%2300d4ff' fill-opacity='0.05' font-family='Arial, Microsoft YaHei, sans-serif' font-size='24' font-weight='800' letter-spacing='1'%3E%3Ctext x='125' y='160'%3EBattle Of Balls · 球球大作战%3C/text%3E%3C/g%3E%3C/svg%3E");
+  animation: cyber-watermark-glitch 3.2s steps(1, end) infinite;
+}
+
+[data-theme="matrix"] body::after {
+  content: none;
+}
+
+@keyframes cyber-watermark-glitch {
+  0%, 100% {
+    opacity: 0.46;
+    filter: none;
+  }
+  6%, 24%, 58% {
+    opacity: 0.42;
+    filter: contrast(1.25);
+  }
+  7%, 25%, 60% {
+    opacity: 0.38;
+    filter: hue-rotate(18deg) contrast(1.32);
+  }
+  9%, 27%, 62% {
+    opacity: 0.46;
+    filter: none;
+  }
+}
+
 [data-theme="dark"] body {
   background: linear-gradient(180deg, #111115 0%, #0d0d11 100%);
+}
+
+body > :not(.theme-matrix-bg) {
+  position: relative;
+  z-index: 1;
 }
 
 [data-theme="matrix"] body > :not(.theme-matrix-bg) {
@@ -510,9 +599,9 @@ button:disabled {
 }
 
 [data-theme="cyberpunk"] .topbar {
-  border-bottom: 1px solid rgba(0, 212, 255, 0.08);
-  background: rgba(11, 11, 19, 0.96);
-  box-shadow: 0 0 12px rgba(0, 212, 255, 0.03);
+  border-bottom: 1px solid rgba(0, 212, 255, 0.12);
+  background: linear-gradient(180deg, rgba(14, 18, 36, 0.96), rgba(9, 10, 20, 0.98));
+  box-shadow: inset 0 0 0 1px rgba(154, 92, 255, 0.03), 0 0 28px rgba(0, 212, 255, 0.05);
 }
 
 [data-theme="cyberpunk"] .topbar strong,
@@ -522,26 +611,68 @@ button:disabled {
 [data-theme="cyberpunk"] .right-controls > label,
 [data-theme="cyberpunk"] .right-controls > label select,
 [data-theme="cyberpunk"] .field > span {
-  color: #dff7ff;
+  color: #effcff;
 }
 
 [data-theme="cyberpunk"] .generator,
 [data-theme="cyberpunk"] .output,
 [data-theme="cyberpunk"] .side-records,
 [data-theme="cyberpunk"] .admin-card {
-  background: rgba(12, 12, 22, 0.94);
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(12, 12, 22, 0.98), rgba(9, 10, 20, 0.98));
+  border: 1px solid rgba(0, 212, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(154, 92, 255, 0.04), 0 0 24px rgba(0, 212, 255, 0.06);
+}
+
+[data-theme="cyberpunk"] .generator::before,
+[data-theme="cyberpunk"] .output::before,
+[data-theme="cyberpunk"] .side-records::before,
+[data-theme="cyberpunk"] .admin-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.08), transparent 38%, rgba(154, 92, 255, 0.08) 100%);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+[data-theme="cyberpunk"] .generator::after,
+[data-theme="cyberpunk"] .output::after,
+[data-theme="cyberpunk"] .side-records::after,
+[data-theme="cyberpunk"] .admin-card::after {
+  content: "";
+  position: absolute;
+  inset: 14px;
   border: 1px solid rgba(0, 212, 255, 0.08);
-  box-shadow: 0 0 10px rgba(0, 212, 255, 0.03);
+  border-radius: 18px;
+  pointer-events: none;
+}
+
+[data-theme="cyberpunk"] .generator > *,
+[data-theme="cyberpunk"] .output > *,
+[data-theme="cyberpunk"] .side-records > *,
+[data-theme="cyberpunk"] .admin-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+[data-theme="cyberpunk"] .generator:hover,
+[data-theme="cyberpunk"] .output:hover,
+[data-theme="cyberpunk"] .side-records:hover,
+[data-theme="cyberpunk"] .admin-card:hover {
+  border-color: rgba(0, 212, 255, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(154, 92, 255, 0.06), 0 0 34px rgba(0, 212, 255, 0.12);
 }
 
 [data-theme="cyberpunk"] .primary {
   color: #08080f;
-  background: var(--primary);
-  box-shadow: 0 0 12px rgba(0, 212, 255, 0.2);
+  background: linear-gradient(90deg, #00d4ff 0%, #7fe8ff 45%, #8c6dff 100%);
+  box-shadow: 0 0 16px rgba(0, 212, 255, 0.22);
 }
 
 [data-theme="cyberpunk"] .primary:hover {
-  background: var(--primary-dark);
+  background: linear-gradient(90deg, #00b8de 0%, #74def7 45%, #7c5ff3 100%);
   box-shadow: 0 0 18px rgba(0, 212, 255, 0.28);
 }
 
@@ -632,7 +763,7 @@ button:disabled {
 [data-theme="cyberpunk"] .placeholder,
 [data-theme="cyberpunk"] .reference-thumb small,
 [data-theme="cyberpunk"] #modelHint {
-  color: #7ea8b8;
+  color: #88a9bb;
 }
 
 [data-theme="cyberpunk"] label,
@@ -751,9 +882,49 @@ button:disabled {
   color: rgba(146, 255, 159, 0.72);
 }
 
+[data-theme="matrix"] .login-banner {
+  background:
+    linear-gradient(180deg, rgba(8, 26, 10, 0.9), rgba(3, 10, 4, 0.95)),
+    repeating-linear-gradient(180deg, rgba(76, 255, 100, 0.05) 0 1px, transparent 1px 4px);
+  border: 1px solid rgba(81, 255, 110, 0.24);
+  box-shadow: 0 0 24px rgba(76, 255, 100, 0.09);
+  color: #a7ffb1;
+}
+
+[data-theme="matrix"] .login-banner span {
+  color: #a7ffb1;
+}
+
+[data-theme="matrix"] .login-banner button {
+  color: #031106;
+  background: linear-gradient(180deg, #80ff8f 0%, #45f85b 100%);
+  box-shadow: 0 0 18px rgba(76, 255, 100, 0.25);
+}
+
+[data-theme="matrix"] .login-banner button:hover {
+  background: linear-gradient(180deg, #9dffa9 0%, #5dff72 100%);
+  box-shadow: 0 8px 24px rgba(76, 255, 100, 0.22);
+}
+
 [data-theme="cyberpunk"] .login-banner {
-  background: linear-gradient(135deg, rgba(0, 212, 255, 0.06), rgba(154, 92, 255, 0.05));
-  border: 1px solid rgba(0, 212, 255, 0.1);
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.08), rgba(154, 92, 255, 0.05));
+  border: 1px solid rgba(0, 212, 255, 0.12);
+  box-shadow: 0 0 20px rgba(0, 212, 255, 0.05);
+}
+
+[data-theme="cyberpunk"] .login-banner span {
+  color: #d9f9ff;
+}
+
+[data-theme="cyberpunk"] .login-banner button {
+  color: #08080f;
+  background: linear-gradient(90deg, #00d4ff 0%, #80ebff 100%);
+  box-shadow: 0 0 16px rgba(0, 212, 255, 0.2);
+}
+
+[data-theme="cyberpunk"] .login-banner button:hover {
+  background: linear-gradient(90deg, #00b8de 0%, #6ee1f7 100%);
+  box-shadow: 0 8px 24px rgba(0, 212, 255, 0.22);
 }
 
 [data-theme="cyberpunk"] .segmented-switch {
@@ -787,6 +958,27 @@ button:disabled {
   color: rgba(169, 242, 255, 0.72);
 }
 
+[data-theme="cyberpunk"] .tool-like-mark,
+[data-theme="cyberpunk"] .reference-count,
+[data-theme="cyberpunk"] .badge {
+  background: linear-gradient(180deg, rgba(0, 212, 255, 0.12), rgba(154, 92, 255, 0.08));
+  border: 1px solid rgba(0, 212, 255, 0.14);
+  color: #baf7ff;
+  box-shadow: 0 0 18px rgba(0, 212, 255, 0.08);
+}
+
+[data-theme="cyberpunk"] .api-item strong,
+[data-theme="cyberpunk"] .record-meta strong,
+[data-theme="cyberpunk"] .output-item strong {
+  color: #effcff;
+}
+
+[data-theme="cyberpunk"] .muted,
+[data-theme="cyberpunk"] .api-item span,
+[data-theme="cyberpunk"] .record-meta p,
+[data-theme="cyberpunk"] .record-meta > span {
+  color: #88a9bb;
+}
 [data-theme="matrix"] .upload-zone {
   border-color: rgba(81, 255, 110, 0.26);
   background: linear-gradient(135deg, rgba(76, 255, 100, 0.08), rgba(10, 30, 12, 0.18));
@@ -816,8 +1008,8 @@ button:disabled {
 
 [data-theme="cyberpunk"] select,
 [data-theme="cyberpunk"] option {
-  background: #0c0f1d;
-  color: #dff7ff;
+  background: rgba(12, 12, 22, 0.98);
+  color: #effcff;
 }
 
 [data-theme="cyberpunk"] .upload-zone {
@@ -847,9 +1039,9 @@ button:disabled {
 [data-theme="cyberpunk"] .prompt-head > span,
 [data-theme="cyberpunk"] .right-controls > label,
 [data-theme="cyberpunk"] .field > span {
-  color: #dff7ff;
+  color: #effcff;
   font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
 }
 
@@ -859,7 +1051,7 @@ button:disabled {
 [data-theme="cyberpunk"] #aspectSelect,
 [data-theme="cyberpunk"] #countSelect,
 [data-theme="cyberpunk"] #qualitySelect {
-  color: #dff7ff;
+  color: #effcff;
 }
 
 [data-theme="cyberpunk"] .image-box {
@@ -960,7 +1152,7 @@ button:disabled {
 
 [data-theme="dark"] .theme-toggle {
   border-color: rgba(214, 188, 132, 0.14);
-  background: linear-gradient(180deg, rgba(30, 30, 34, 0.96), rgba(22, 22, 26, 0.98));
+  background: linear-gradient(180deg, rgba(30, 30, 34, 0.96), rgba(22, 22, 26, 0.96));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
@@ -1001,10 +1193,10 @@ button:disabled {
 [data-theme="cyberpunk"] .theme-toggle[data-theme="dark"] .theme-toggle-face-dark,
 [data-theme="cyberpunk"] .theme-toggle[data-theme="cyberpunk"] .theme-toggle-face-cyberpunk,
 [data-theme="cyberpunk"] .theme-toggle[data-theme="matrix"] .theme-toggle-face-matrix {
-  background: linear-gradient(180deg, rgba(0, 212, 255, 0.1), rgba(154, 92, 255, 0.06));
-  color: var(--primary);
-  border: 1px solid rgba(0, 212, 255, 0.15);
-  box-shadow: 0 0 8px rgba(0, 212, 255, 0.1);
+  background: linear-gradient(180deg, rgba(0, 212, 255, 0.16), rgba(154, 92, 255, 0.12));
+  color: #effcff;
+  border: 1px solid rgba(0, 212, 255, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 18px rgba(0, 212, 255, 0.12);
 }
 
 .topbar-actions {
@@ -2271,32 +2463,32 @@ select:focus {
 [data-theme="cyberpunk"] .admin-dialog,
 [data-theme="cyberpunk"] .preview-dialog {
   background: linear-gradient(180deg, rgba(11, 13, 24, 0.99), rgba(8, 9, 18, 0.99));
-  color: #e6fbff;
-  border: 1px solid rgba(0, 212, 255, 0.1);
+  color: #effcff;
+  border: 1px solid rgba(0, 212, 255, 0.12);
 }
 
 [data-theme="cyberpunk"] .dialog-head {
-  background: linear-gradient(180deg, rgba(14, 18, 32, 0.98), rgba(10, 12, 22, 0.98));
-  border-bottom: 1px solid rgba(0, 212, 255, 0.08);
-  box-shadow: 0 6px 18px rgba(0, 212, 255, 0.06);
+  background: linear-gradient(180deg, rgba(14, 18, 36, 0.96), rgba(9, 10, 20, 0.98));
+  border-bottom: 1px solid rgba(0, 212, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(154, 92, 255, 0.03), 0 0 28px rgba(0, 212, 255, 0.05);
 }
 
 [data-theme="cyberpunk"] .admin-card {
-  background: linear-gradient(180deg, rgba(12, 14, 26, 0.96), rgba(8, 10, 20, 0.98));
-  border: 1px solid rgba(0, 212, 255, 0.08);
-  box-shadow: inset 0 0 0 1px rgba(154, 92, 255, 0.03), 0 10px 24px rgba(0, 212, 255, 0.05);
+  background: linear-gradient(180deg, rgba(12, 12, 22, 0.98), rgba(9, 10, 20, 0.98));
+  border: 1px solid rgba(0, 212, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(154, 92, 255, 0.04), 0 0 24px rgba(0, 212, 255, 0.06);
 }
 
 [data-theme="cyberpunk"] .card-head {
-  border-bottom-color: rgba(0, 212, 255, 0.08);
+  border-bottom-color: rgba(0, 212, 255, 0.12);
 }
 
 [data-theme="cyberpunk"] .api-item,
 [data-theme="cyberpunk"] .record-item,
 [data-theme="cyberpunk"] .record-filters {
-  background: rgba(10, 12, 24, 0.92);
-  border-color: rgba(0, 212, 255, 0.08);
-  box-shadow: 0 8px 18px rgba(0, 212, 255, 0.04);
+  background: linear-gradient(180deg, rgba(10, 12, 24, 0.96), rgba(8, 10, 20, 0.98));
+  border-color: rgba(0, 212, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(154, 92, 255, 0.04), 0 0 18px rgba(0, 212, 255, 0.05);
 }
 
 [data-theme="matrix"] .admin-dialog,
@@ -2322,6 +2514,31 @@ select:focus {
   border-bottom-color: rgba(81, 255, 110, 0.08);
 }
 
+[data-theme="matrix"] .api-item,
+[data-theme="matrix"] .record-item,
+[data-theme="matrix"] .record-filters {
+  background: linear-gradient(180deg, rgba(3, 11, 4, 0.9), rgba(2, 8, 3, 0.94));
+  border-color: rgba(81, 255, 110, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(76, 255, 100, 0.03);
+}
+
+[data-theme="matrix"] .admin-dialog .api-list {
+  border-radius: 12px;
+  background: rgba(3, 11, 4, 0.54);
+}
+
+[data-theme="matrix"] .admin-dialog .empty-text {
+  margin: 16px 0 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(81, 255, 110, 0.12);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(3, 11, 4, 0.9), rgba(2, 8, 3, 0.94));
+  color: #8fe59a;
+}
+
+[data-theme="matrix"] .admin-dialog .muted {
+  color: #8fe59a;
+}
 
 [data-theme="dark"] .admin-dialog h2,
 [data-theme="dark"] .admin-dialog h3,
@@ -2404,7 +2621,7 @@ select:focus {
 }
 
 [data-theme="cyberpunk"] .admin-dialog .mode-check {
-  background: linear-gradient(180deg, rgba(10, 12, 24, 0.94), rgba(8, 10, 20, 0.96));
+  background: linear-gradient(180deg, rgba(10, 12, 24, 0.96), rgba(8, 10, 20, 0.98));
   border-color: rgba(0, 212, 255, 0.08);
   color: #96c7d6;
   box-shadow: 0 10px 22px rgba(0, 212, 255, 0.04);
@@ -2431,6 +2648,7 @@ select:focus {
   box-shadow: 0 12px 24px rgba(76, 255, 100, 0.06);
 }
 
+@media (max-width: 1280px) {
   .user-records-list {
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     max-height: 380px;
