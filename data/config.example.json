@@ -31,9 +31,13 @@
       "endpoint": "https://api.openai.com/v1",
       "apiKey": "sk-or-provider-key",
       "size": "1024x1024",
+      "supportedSizes": ["1024x1024", "1024x1536", "1536x1024"],
+      "sizeSource": "preset",
+      "sizeUpdatedAt": "2026-05-04T00:00:00.000Z",
+      "sizeDiscoveryNote": "由 provider preset 生成",
       "requestModes": ["generation", "edit"],
       "provider": "openai",
-      "useResponsesImageTool": false,
+      "useResponsesImageTool": true,
       "enabled": true
     },
     {
@@ -44,6 +48,10 @@
       "endpoint": "https://ark.cn-beijing.volces.com/api/v3/images/generations",
       "apiKey": "ark-provider-key",
       "size": "1024x1024",
+      "supportedSizes": ["1024x1024", "1024x1536", "1536x1024", "768x1344", "1344x768"],
+      "sizeSource": "preset",
+      "sizeUpdatedAt": "2026-05-04T00:00:00.000Z",
+      "sizeDiscoveryNote": "由 provider preset 生成",
       "requestModes": ["generation", "edit"],
       "provider": "ark",
       "useResponsesImageTool": false,
@@ -57,7 +65,7 @@
       "model": "gpt-4o",
       "endpoint": "https://api.openai.com/v1/chat/completions",
       "apiKey": "sk-llm-key",
-      "temperature": 0.4,
+      "reasoningEffort": "auto",
       "enabled": true
     }
   ]

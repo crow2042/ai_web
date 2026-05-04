@@ -146,14 +146,8 @@
             <select id="modelSelect"></select>
           </label>
           <label>
-            图片比例
-            <select id="aspectSelect">
-              <option value="1:1 正方形构图">1:1</option>
-              <option value="16:9 横向宽银幕构图" selected>横向 16:9</option>
-              <option value="4:3 横向经典构图">横向 4:3</option>
-              <option value="9:16 竖向手机海报构图">竖向 16:9</option>
-              <option value="3:4 竖向经典构图">竖向 4:3</option>
-            </select>
+            图片尺寸
+            <select id="sizeSelect"></select>
           </label>
           <label>
             图片张数
@@ -172,7 +166,8 @@
           <label>
             Quality
             <select id="qualitySelect">
-              <option value="high" selected>high</option>
+              <option value="high">high</option>
+              <option value="medium" selected>medium</option>
               <option value="low">low</option>
             </select>
           </label>
@@ -272,7 +267,14 @@
             <label>模型 ID<input id="apiModel" placeholder="例如：gpt-image-1" /></label>
             <label>API 地址<input id="apiEndpoint" placeholder="图片生成接口地址" /></label>
             <label>API Key<input id="apiKey" type="password" placeholder="保存后会隐藏" /></label>
-            <label>尺寸<input id="apiSize" placeholder="1024x1024" /></label>
+            <label>默认尺寸<select id="apiSize"></select></label>
+            <label class="mode-multi-field">支持尺寸
+              <textarea id="apiSupportedSizes" rows="3" placeholder="1024x1024, 1024x1536, 1536x1024"></textarea>
+            </label>
+            <div class="inline-action">
+              <button id="discoverApiSizesBtn" class="compact" type="button">探测支持尺寸</button>
+            </div>
+            <p class="status" id="apiSizeStatus"></p>
             <label>适配器
               <select id="apiProvider">
                 <option value="auto">自动</option>
@@ -281,14 +283,8 @@
                 <option value="ark">Ark Seedream</option>
               </select>
             </label>
-            <label>Ark 改图模型<input id="apiEditModel" placeholder="doubao-seededit-3-0-i2i-250628" /></label>
+            <input id="apiEditModel" type="hidden" />
             <label class="check-row"><input id="apiUseResponsesImageTool" type="checkbox" /> GPT Image 使用 Responses image_generation 工具</label>
-            <label class="mode-multi-field">用于模式
-              <div class="mode-multi-box">
-                <label class="mode-check"><input id="apiModeGeneration" type="checkbox" checked /> generation 生图</label>
-                <label class="mode-check"><input id="apiModeEdit" type="checkbox" /> edit 改图</label>
-              </div>
-            </label>
           </div>
           <button type="submit" class="primary compact">保存模型</button>
           <p class="status" id="apiStatus"></p>
@@ -310,7 +306,14 @@
             <label>模型 ID<input id="llmApiModel" placeholder="例如：gpt-4o / gpt-4.1" /></label>
             <label>API 地址<input id="llmApiEndpoint" placeholder="例如：https://api.openai.com/v1" /></label>
             <label>API Key<input id="llmApiKey" type="password" placeholder="保存后会隐藏" /></label>
-            <label>温度<input id="llmApiTemperature" type="number" min="0" max="2" step="0.1" value="0.4" /></label>
+            <label>思考程度
+              <select id="llmApiReasoningEffort">
+                <option value="auto">默认，不额外传参</option>
+                <option value="low">低</option>
+                <option value="medium">中</option>
+                <option value="high">高</option>
+              </select>
+            </label>
             <label class="check-row"><input id="llmApiEnabled" type="checkbox" checked /> 启用</label>
           </div>
           <button type="submit" class="primary compact">保存 LLM 模型</button>
@@ -345,7 +348,8 @@
     </dialog>
 
     <dialog id="loginFailDialog" class="login-fail-dialog">
-      <p>登录失败</p>
+      <h3>飞书登录失败</h3>
+      <p id="loginFailMessage">登录失败，请重试。</p>
       <button class="primary" id="closeLoginFailBtn">确定</button>
     </dialog>
 

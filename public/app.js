@@ -13,7 +13,7 @@ const state = {
   records: [],
   userRecords: [],
   taskMode: "edit",
-  quality: "high",
+  quality: "medium",
   lastGeneratedPrompt: "",
   lastGeneratedJson: "",
   lastGeneratedMode: "",
@@ -195,8 +195,10 @@ async function request(url, options = {}) {
     headers: { "Content-Type": "application/json; charset=utf-8", ...(options.headers || {}) },
     ...options
   });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || "请求失败");
+  const text = await response.text();
+  let payload = {};
+  try { payload = text ? JSON.parse(text) : {}; } catch { payload = { error: text }; }
+  if (!response.ok) throw new Error(payload.error || payload.message || text || "请求失败");
   return payload;
 }
 
@@ -255,6 +257,7 @@ function renderModelOptions() {
       ? "当前没有可用于 edit 改图/参考图生图的模型，请在管理员中配置"
       : "当前没有可用于 generation 纯文生图的模型，请联系管理员配置";
     select.innerHTML = `<option value="">${label}</option>`;
+    if ($("sizeSelect")) $("sizeSelect").innerHTML = '<option value="">无可用尺寸</option>';
     $("generateBtn").disabled = true;
     $("modelHint").textContent = "未配置当前任务模式的模型";
     return;
@@ -264,16 +267,37 @@ function renderModelOptions() {
     `<option value="${model.id}">${escapeHtml(model.name)} (${escapeHtml(model.model)})</option>`
   ).join("");
   select.value = state.models.some((model) => model.id === currentValue) ? currentValue : state.models[0].id;
+  renderSizeOptions();
   $("generateBtn").disabled = !state.loggedIn;
   updateModelHint();
+}
+
+function getModelSupportedSizes(model) {
+  const sizes = Array.isArray(model?.supportedSizes) ? model.supportedSizes : [];
+  const fallback = model?.size ? [model.size] : ["1024x1024"];
+  return [...new Set((sizes.length ? sizes : fallback).map((size) => String(size || "").trim()).filter(Boolean))];
+}
+
+function renderSizeOptions() {
+  const select = $("sizeSelect");
+  if (!select) return;
+  const model = state.models.find((item) => item.id === $("modelSelect").value);
+  const current = select.value;
+  const sizes = getModelSupportedSizes(model);
+  select.innerHTML = sizes.map((size) => `<option value="${escapeHtml(size)}">${escapeHtml(size)}</option>`).join("");
+  const preferred = model?.size || sizes[0] || "1024x1024";
+  select.value = sizes.includes(current) ? current : sizes.includes(preferred) ? preferred : sizes[0] || "";
 }
 
 function updateModelHint() {
   const selected = state.models.find((model) => model.id === $("modelSelect").value);
   const taskLabel = taskModeLabel(state.taskMode);
-  $("modelHint").textContent = selected
-    ? `当前模型：${selected.name} · ${selected.size} · ${taskLabel}`
-    : "等待选择模型";
+  if (!selected) {
+    $("modelHint").textContent = "等待选择模型";
+    return;
+  }
+  const sizes = getModelSupportedSizes(selected);
+  $("modelHint").textContent = `当前模型：${selected.name} · 默认 ${selected.size || sizes[0]} · ${sizes.length} 个尺寸 · ${taskLabel}`;
 }
 
 function taskModeLabel(mode) {
@@ -295,10 +319,7 @@ function getApiModes(api) {
 }
 
 function getApiModesFromForm() {
-  const modes = [];
-  if ($("apiModeGeneration").checked) modes.push("generation");
-  if ($("apiModeEdit").checked) modes.push("edit");
-  return modes;
+  return ["generation", "edit"];
 }
 
 function formatApiModes(api) {
@@ -308,8 +329,24 @@ function formatApiModes(api) {
   return modes[0] === "edit" ? "edit 改图" : "generation 生图";
 }
 
+function getSelectedSize() {
+  return $("sizeSelect")?.value || "";
+}
+
+function aspectFromSize(size) {
+  const match = String(size || "").match(/^(\d+)x(\d+)$/i);
+  if (!match) return "";
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!width || !height) return "";
+  const gcd = (a, b) => b ? gcd(b, a % b) : a;
+  const divisor = gcd(width, height);
+  return `${width / divisor}:${height / divisor}`;
+}
+
 function getSelectedAspect() {
-  return $("aspectSelect").value || "16:9 横向宽银幕构图";
+  const sizeAspect = aspectFromSize(getSelectedSize());
+  return sizeAspect ? `${sizeAspect} 构图` : "1:1 构图";
 }
 
 function aspectShort(aspect) {
@@ -624,12 +661,17 @@ async function generateImage() {
     return;
   }
   const modelId = $("modelSelect").value;
+  const size = getSelectedSize();
   const aspect = getSelectedAspect();
   const count = Number($("countSelect").value);
-  const quality = $("qualitySelect").value || "high";
+  const quality = $("qualitySelect").value || "medium";
   state.quality = quality;
   if (!modelId) {
     setStatus("statusText", "请先选择一个已配置的模型。", true);
+    return;
+  }
+  if (!size) {
+    setStatus("statusText", "请先选择图片尺寸。", true);
     return;
   }
   const imageRequestMode = getImageRequestMode(state.taskMode);
@@ -672,6 +714,7 @@ async function generateImage() {
         originalPrompt: rawPrompt,
         promptOutputs: promptOutputsToSend,
         aspect,
+        size,
         count,
         quality,
         requestMode: imageRequestMode,
@@ -742,11 +785,10 @@ function renderLoadingPlaceholders(count, aspect) {
 }
 
 function getCssAspectRatio(aspect) {
-  if (aspect.startsWith("1:1")) return "1 / 1";
-  if (aspect.startsWith("16:9")) return "16 / 9";
-  if (aspect.startsWith("4:3")) return "4 / 3";
-  if (aspect.startsWith("9:16")) return "9 / 16";
-  if (aspect.startsWith("3:4")) return "3 / 4";
+  const size = String(aspect || "").match(/^(\d+)x(\d+)$/i);
+  if (size) return `${Number(size[1])} / ${Number(size[2])}`;
+  const ratio = String(aspect || "").match(/^(\d+):(\d+)/);
+  if (ratio) return `${Number(ratio[1])} / ${Number(ratio[2])}`;
   return "16 / 9";
 }
 
@@ -884,19 +926,24 @@ async function loadAdminMeta() {
   state.feishuAuth = data.feishuAuth || null;
 }
 
+function showLoginFail(message) {
+  $("loginFailMessage").textContent = String(message || "登录失败，请重试。").trim() || "登录失败，请重试。";
+  $("loginFailDialog").showModal();
+}
+
 async function beginFeishuLogin() {
   try {
     const res = await fetch("/api/admin/feishu/login?returnTo=" + encodeURIComponent("/image.html"));
-    const data = await res.json();
+    const text = await res.text();
+    let data = {};
+    try { data = text ? JSON.parse(text) : {}; } catch { data = { error: text }; }
     if (!res.ok || !data || !data.url) {
-      $("loginFailDialog").querySelector("p").textContent = data?.error || "登录失败";
-      $("loginFailDialog").showModal();
+      showLoginFail(data?.error || data?.message || text || "登录失败，请检查飞书登录配置。");
       return;
     }
     window.location.href = data.url;
-  } catch {
-    $("loginFailDialog").querySelector("p").textContent = "登录失败";
-    $("loginFailDialog").showModal();
+  } catch (error) {
+    showLoginFail(error.message || "登录失败，请检查网络或后端服务。");
   }
 }
 
@@ -959,9 +1006,7 @@ async function checkAdminSessionAfterRedirect() {
   const cleanUrl = window.location.pathname + (window.location.hash || "");
   window.history.replaceState({}, document.title, cleanUrl);
   if (error) {
-    showAdminLogin();
-    setStatus("loginStatus", error);
-    $("adminDialog").showModal();
+    showLoginFail(error || "飞书登录失败，请重新登录。");
     return;
   }
   try {
@@ -1012,6 +1057,14 @@ async function loadLlmAdminConfig() {
   }
 }
 
+function reasoningEffortLabel(value) {
+  const text = String(value || "auto").toLowerCase();
+  if (text === "low") return "低";
+  if (text === "medium") return "中";
+  if (text === "high") return "高";
+  return "默认";
+}
+
 function renderLlmApis(apis) {
   const list = $("llmApiList");
   list.innerHTML = "";
@@ -1023,7 +1076,7 @@ function renderLlmApis(apis) {
     const item = document.createElement("div");
     item.className = "api-item";
     const info = document.createElement("div");
-    info.innerHTML = `<strong>${escapeHtml(api.name)}</strong><span>${escapeHtml(api.model)} · 温度 ${escapeHtml(String(api.temperature ?? 0.4))}${api.enabled === false ? " · 已停用" : ""}</span>`;
+    info.innerHTML = `<strong>${escapeHtml(api.name)}</strong><span>${escapeHtml(api.model)} · 思考 ${escapeHtml(reasoningEffortLabel(api.reasoningEffort))}${api.enabled === false ? " · 已停用" : ""}</span>`;
 
     const edit = document.createElement("button");
     edit.type = "button";
@@ -1051,7 +1104,7 @@ function clearLlmApiForm() {
   $("llmApiModel").value = "";
   $("llmApiEndpoint").value = "";
   $("llmApiKey").value = "";
-  $("llmApiTemperature").value = "0.4";
+  $("llmApiReasoningEffort").value = "auto";
   $("llmApiEnabled").checked = true;
   setStatus("llmApiStatus", "");
 }
@@ -1065,7 +1118,7 @@ function fillLlmApiForm(api) {
   $("llmApiModel").value = api.model || "";
   $("llmApiEndpoint").value = api.endpoint || "";
   $("llmApiKey").value = api.apiKey || "";
-  $("llmApiTemperature").value = String(api.temperature ?? 0.4);
+  $("llmApiReasoningEffort").value = ["auto", "low", "medium", "high"].includes(String(api.reasoningEffort || "auto")) ? String(api.reasoningEffort || "auto") : "auto";
   $("llmApiEnabled").checked = api.enabled !== false;
   setStatus("llmApiStatus", "正在编辑已有 LLM 模型。API Key 保持星号表示不修改。");
 }
@@ -1079,7 +1132,7 @@ async function saveLlmApi(event) {
     model: $("llmApiModel").value,
     endpoint: $("llmApiEndpoint").value,
     apiKey: $("llmApiKey").value,
-    temperature: Number($("llmApiTemperature").value) || 0.4,
+    reasoningEffort: $("llmApiReasoningEffort").value || "auto",
     enabled: $("llmApiEnabled").checked
   };
   try {
@@ -1119,7 +1172,8 @@ function renderApis(apis) {
     const info = document.createElement("div");
     var adapter = api.provider && api.provider !== "auto" ? ` · ${api.provider}` : "";
     var responses = api.useResponsesImageTool ? " · Responses 工具" : "";
-    info.innerHTML = `<strong>${escapeHtml(api.name)}</strong><span>${escapeHtml(api.model)} · ${escapeHtml(formatApiModes(api))}${escapeHtml(adapter)}${escapeHtml(responses)}</span>`;
+    var sizes = getModelSupportedSizes(api);
+    info.innerHTML = `<strong>${escapeHtml(api.name)}</strong><span>${escapeHtml(api.model)} · ${escapeHtml(formatApiModes(api))}${escapeHtml(adapter)}${escapeHtml(responses)} · 默认 ${escapeHtml(api.size || sizes[0] || "-")} · ${sizes.length} 个尺寸</span>`;
 
     const edit = document.createElement("button");
     edit.type = "button";
@@ -1146,6 +1200,40 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+function normalizeSizeText(value) {
+  const text = String(value || "").trim().toLowerCase().replace(/[×＊*]/g, "x");
+  const match = text.match(/^(\d{2,5})\s*x\s*(\d{2,5})$/);
+  return match ? `${Number(match[1])}x${Number(match[2])}` : text === "auto" ? "auto" : "";
+}
+
+function readSupportedSizesFromForm(includeSelected = false) {
+  const sizes = $("apiSupportedSizes").value
+    .split(/[\n,，;；]+/)
+    .map(normalizeSizeText)
+    .filter(Boolean);
+  const selected = normalizeSizeText($("apiSize").value);
+  if (includeSelected && selected) sizes.push(selected);
+  const unique = [...new Set(sizes)];
+  return unique.length ? unique : ["1024x1024"];
+}
+
+function renderDefaultSizeOptions(sizes, selected) {
+  const select = $("apiSize");
+  const safeSizes = [...new Set((sizes || []).map(normalizeSizeText).filter(Boolean))];
+  const values = safeSizes.length ? safeSizes : ["1024x1024"];
+  const preferred = normalizeSizeText(selected) || values[0];
+  select.innerHTML = values.map((size) => `<option value="${escapeHtml(size)}">${escapeHtml(size)}</option>`).join("");
+  select.value = values.includes(preferred) ? preferred : values[0];
+}
+
+function setApiSizeForm(sizes, selected, note) {
+  const values = [...new Set((sizes || []).map(normalizeSizeText).filter(Boolean))];
+  const safeValues = values.length ? values : ["1024x1024"];
+  $("apiSupportedSizes").value = safeValues.join("\n");
+  renderDefaultSizeOptions(safeValues, selected || safeValues[0]);
+  $("apiSizeStatus").textContent = note || "";
+}
+
 function clearApiForm() {
   state.editingApi = null;
   $("apiForm").classList.remove("hidden");
@@ -1155,12 +1243,11 @@ function clearApiForm() {
   $("apiModel").value = "";
   $("apiEndpoint").value = "";
   $("apiKey").value = "";
-  $("apiSize").value = "1024x1024";
+  setApiSizeForm(["1024x1024"], "1024x1024", "");
   $("apiProvider").value = "auto";
   $("apiEditModel").value = "";
-  $("apiUseResponsesImageTool").checked = false;
-  $("apiModeGeneration").checked = true;
-  $("apiModeEdit").checked = false;
+  $("apiUseResponsesImageTool").checked = true;
+  $("apiSizeStatus").dataset.source = "manual";
   setStatus("apiStatus", "");
 }
 
@@ -1173,13 +1260,11 @@ function fillApiForm(api) {
   $("apiModel").value = api.model || "";
   $("apiEndpoint").value = api.endpoint || "";
   $("apiKey").value = api.apiKey || "";
-  $("apiSize").value = api.size || "1024x1024";
+  setApiSizeForm(getModelSupportedSizes(api), api.size || "1024x1024", api.sizeDiscoveryNote || "");
   $("apiProvider").value = api.provider || "auto";
   $("apiEditModel").value = api.editModel || "";
-  $("apiUseResponsesImageTool").checked = Boolean(api.useResponsesImageTool);
-  const modes = getApiModes(api);
-  $("apiModeGeneration").checked = modes.includes("generation");
-  $("apiModeEdit").checked = modes.includes("edit");
+  $("apiUseResponsesImageTool").checked = api.useResponsesImageTool !== false;
+  $("apiSizeStatus").dataset.source = api.sizeSource || "manual";
   setStatus("apiStatus", "正在编辑已有模型。API Key 保持星号表示不修改。");
 }
 
@@ -1187,16 +1272,23 @@ async function saveApi(event) {
   event.preventDefault();
   setStatus("apiStatus", "正在保存...");
   const requestModes = getApiModesFromForm();
+  const supportedSizes = readSupportedSizesFromForm(true);
+  renderDefaultSizeOptions(supportedSizes, $("apiSize").value);
   const body = {
     id: $("apiId").value || undefined,
     name: $("apiName").value,
     model: $("apiModel").value,
     endpoint: $("apiEndpoint").value,
     apiKey: $("apiKey").value,
-    size: $("apiSize").value || "1024x1024",
+    size: $("apiSize").value || supportedSizes[0] || "1024x1024",
+    supportedSizes,
+    sizeSource: $("apiSizeStatus").dataset.source || "manual",
+    sizeUpdatedAt: new Date().toISOString(),
+    sizeDiscoveryNote: $("apiSizeStatus").textContent || "手动配置支持尺寸",
     provider: $("apiProvider").value || "auto",
     editModel: $("apiEditModel").value,
     useResponsesImageTool: $("apiUseResponsesImageTool").checked,
+    requestMode: requestModes[0] || "generation",
     requestModes,
     enabled: requestModes.length > 0
   };
@@ -1212,6 +1304,35 @@ async function saveApi(event) {
     $("apiForm").classList.add("hidden");
     await loadAdminConfig();
     await loadModels();
+  } catch (error) {
+    setStatus("apiStatus", error.message, true);
+  }
+}
+
+async function discoverApiSizes() {
+  setStatus("apiStatus", "正在探测支持尺寸...");
+  const requestModes = getApiModesFromForm();
+  const body = {
+    id: $("apiId").value || undefined,
+    name: $("apiName").value,
+    model: $("apiModel").value,
+    endpoint: $("apiEndpoint").value,
+    apiKey: $("apiKey").value,
+    size: $("apiSize").value || "1024x1024",
+    supportedSizes: readSupportedSizesFromForm(true),
+    provider: $("apiProvider").value || "auto",
+    editModel: $("apiEditModel").value,
+    useResponsesImageTool: $("apiUseResponsesImageTool").checked,
+    requestMode: requestModes[0] || "generation",
+    requestModes,
+    enabled: requestModes.length > 0
+  };
+  try {
+    const data = await request("/api/admin/apis/discover-sizes", { method: "POST", body: JSON.stringify(body) });
+    const note = [data.note, ...(data.warnings || [])].filter(Boolean).join("；");
+    setApiSizeForm(data.supportedSizes || [data.defaultSize || "1024x1024"], data.defaultSize, note);
+    $("apiSizeStatus").dataset.source = data.source || "fallback";
+    setStatus("apiStatus", `探测完成：${data.source || "fallback"}`);
   } catch (error) {
     setStatus("apiStatus", error.message, true);
   }
@@ -1285,6 +1406,7 @@ function renderRecords(records, listId = "recordsList") {
           <span class="badge ${isSuccess ? "success-badge" : "failed-badge"}">${isSuccess ? "成功" : "失败"}</span>
         </div>
         <span>生成模型：${escapeHtml(record.model || record.modelId || "-")}${qualityText}</span>
+        <span>图片尺寸：${escapeHtml(record.size || record.aspect || "-")}</span>
         <span>生成图片数量：${escapeHtml(record.count || outputs.length || 0)} 张</span>
         <p>Prompt：${escapeHtml(record.prompt || "-")}</p>
       `;
@@ -1297,6 +1419,7 @@ function renderRecords(records, listId = "recordsList") {
           <span class="badge ${isSuccess ? "success-badge" : "failed-badge"}">${isSuccess ? "成功" : "失败"}</span>
         </div>
         <span>生成模型：${escapeHtml(record.model || record.modelId || "-")}${qualityText}</span>
+        <span>图片尺寸：${escapeHtml(record.size || record.aspect || "-")}</span>
         <span>参考图：${escapeHtml(record.referenceName || record.reference || "无")}</span>
         <span>生成图片数量：${escapeHtml(record.count || outputs.length || 0)} 张</span>
         <p>Prompt：${escapeHtml(record.prompt || "-")}</p>
@@ -1559,7 +1682,13 @@ $("refreshUserRecordsBtn").addEventListener("click", loadUserRecords);
 $("closePreviewBtn").addEventListener("click", () => $("previewDialog").close());
 $("downloadAllBtn").addEventListener("click", downloadAllImages);
 $("generateBtn").addEventListener("click", generateImage);
-$("modelSelect").addEventListener("change", updateModelHint);
+$("modelSelect").addEventListener("change", () => {
+  renderSizeOptions();
+  updateModelHint();
+});
+$("sizeSelect").addEventListener("change", updateModelHint);
+$("apiSupportedSizes").addEventListener("input", () => renderDefaultSizeOptions(readSupportedSizesFromForm(), $("apiSize").value));
+$("discoverApiSizesBtn").addEventListener("click", discoverApiSizes);
 $("editTaskBtn").addEventListener("click", () => setTaskMode("edit"));
 $("referenceTaskBtn").addEventListener("click", () => setTaskMode("reference"));
 $("textTaskBtn").addEventListener("click", () => setTaskMode("text"));
@@ -1568,7 +1697,7 @@ $("clearOptimizerBtn").addEventListener("click", clearOptimizerInputs);
 $("plainPromptBtn").addEventListener("click", () => setOutputView("plain"));
 $("jsonPromptBtn").addEventListener("click", () => setOutputView("json"));
 $("qualitySelect").addEventListener("change", () => {
-  state.quality = $("qualitySelect").value || "high";
+  state.quality = $("qualitySelect").value || "medium";
 });
 
 initThemeToggle();

@@ -82,6 +82,7 @@ function Get-CompactRecord($Entry) {
     modelId = $Entry.modelId
     prompt = $Entry.prompt
     aspect = $Entry.aspect
+    size = $Entry.size
     referenceName = $Entry.referenceName
     referencePreviews = $Entry.referencePreviews
     count = $Entry.count
@@ -95,6 +96,75 @@ function Get-ApiRequestMode([string]$Endpoint) {
   $text = ([string]$Endpoint).ToLowerInvariant()
   if ($text -match '/images?/(edit|edits)/?$') { return "edit" }
   return "generation"
+}
+
+function Get-NormalizedImageSize($Value) {
+  $text = ([string]$Value).Trim().ToLowerInvariant() -replace '[×＊*]', 'x'
+  if (!$text) { return "" }
+  if ($text -eq "auto") { return "auto" }
+  if ($text -match '^(\d{2,5})\s*x\s*(\d{2,5})$') {
+    $w = [int]$Matches[1]
+    $h = [int]$Matches[2]
+    if ($w -ge 64 -and $h -ge 64 -and $w -le 8192 -and $h -le 8192) { return "$($w)x$($h)" }
+  }
+  return ""
+}
+
+function Get-SupportedSizes($Api) {
+  $raw = @()
+  if ($Api -and $Api.PSObject.Properties["supportedSizes"] -and $Api.supportedSizes) { $raw += @(Get-ValueList $Api.supportedSizes) }
+  if ($Api -and $Api.PSObject.Properties["size"] -and $Api.size) { $raw += [string]$Api.size }
+  $sizes = @()
+  foreach ($item in $raw) {
+    foreach ($part in ([string]$item -split '[\n,，;；]+')) {
+      $size = Get-NormalizedImageSize $part
+      if ($size -and $sizes -notcontains $size) { $sizes += $size }
+    }
+  }
+  if (!$sizes.Count) { $sizes = @("1024x1024") }
+  return @($sizes)
+}
+
+function Get-DefaultSize($Api) {
+  $sizes = @(Get-SupportedSizes $Api)
+  $size = Get-NormalizedImageSize $Api.size
+  if ($size -and $sizes -contains $size) { return $size }
+  return $sizes[0]
+}
+
+function Get-RequestSize($Api, $RequestedSize) {
+  $sizes = @(Get-SupportedSizes $Api)
+  $raw = ([string]$RequestedSize).Trim()
+  $size = Get-NormalizedImageSize $raw
+  if ($raw -and !$size) { throw "图片尺寸格式不正确，请选择当前模型支持的尺寸" }
+  if ($size -and $sizes -notcontains $size) { throw "所选尺寸 $size 不在当前模型支持列表中" }
+  if ($size) { return $size }
+  return Get-DefaultSize $Api
+}
+
+function Get-SizePreset($Api) {
+  $provider = $(if ($Api.provider) { ([string]$Api.provider).ToLowerInvariant() } else { "auto" })
+  $model = ([string]$Api.model).ToLowerInvariant()
+  $endpoint = ([string]$Api.endpoint).ToLowerInvariant()
+  if ($provider -eq "auto") {
+    if ($model -match '^gpt-image-' -or $endpoint -match 'openai|ticketpro') { $provider = "openai" }
+    elseif ($model -match 'seedream|seededit' -or $endpoint -match 'volces|ark') { $provider = "ark" }
+  }
+  if ($provider -eq "openai") {
+    if ($model -match 'dall-e-3') { return @("1024x1024", "1024x1792", "1792x1024") }
+    if ($model -match 'dall-e-2') { return @("256x256", "512x512", "1024x1024") }
+    return @("1024x1024", "1024x1536", "1536x1024")
+  }
+  if ($provider -eq "ark") { return @("1024x1024", "1024x1536", "1536x1024", "768x1344", "1344x768") }
+  return @()
+}
+
+function Discover-ImageSizes($Api) {
+  $preset = @(Get-SizePreset $Api)
+  if ($preset.Count) {
+    return [ordered]@{ supportedSizes = @($preset); defaultSize = $preset[0]; source = "preset"; note = "由模型适配器预设生成支持尺寸"; warnings = @() }
+  }
+  return [ordered]@{ supportedSizes = @("1024x1024"); defaultSize = "1024x1024"; source = "fallback"; note = "上游未暴露尺寸，请管理员手动确认后保存"; warnings = @("PowerShell 后端使用 fallback 尺寸") }
 }
 
 function Get-PayloadMessage($Payload, [string]$Fallback = "") {
@@ -167,6 +237,14 @@ function Test-GptImageModel($Model) {
   return ([string]$Model) -match '^gpt-image-'
 }
 
+function Test-TicketproEndpoint($Endpoint) {
+  try {
+    return ([Uri]([string]$Endpoint)).Host.ToLowerInvariant() -eq "hk.ticketpro.cc"
+  } catch {
+    return $false
+  }
+}
+
 function Get-CleanHeaderValue($Value, [string]$FieldName) {
   $text = ([string]$Value).Normalize([Text.NormalizationForm]::FormKC).Trim()
   $text = $text -replace '^(?i)Bearer\s+', ''
@@ -223,7 +301,7 @@ function ConvertFrom-DataUrl($DataUrl, [int]$Index) {
 
 function Get-SanitizedQuality($Value) {
   $text = ([string]$Value).Trim().ToLowerInvariant()
-  if ($text -eq "low" -or $text -eq "high") { return $text }
+  if ($text -in @("low", "medium", "high")) { return $text }
   return ""
 }
 
@@ -385,16 +463,41 @@ function Get-PublicApis($Config) {
         id = $api.id
         name = $api.name
         model = $api.model
-        size = $(if ($api.size) { $api.size } else { "1024x1024" })
+        size = Get-DefaultSize $api
+        supportedSizes = @(Get-SupportedSizes $api)
+        sizeSource = $(if ($api.PSObject.Properties["sizeSource"] -and $api.sizeSource) { [string]$api.sizeSource } else { "legacy" })
+        sizeDiscoveryNote = $(if ($api.PSObject.Properties["sizeDiscoveryNote"] -and $api.sizeDiscoveryNote) { [string]$api.sizeDiscoveryNote } else { "" })
         requestModes = @($requestModes)
         requestMode = $requestModes[0]
         provider = $(if ($api.provider) { [string]$api.provider } else { "auto" })
-        useResponsesImageTool = [bool]$api.useResponsesImageTool
+        useResponsesImageTool = $(if ($api.PSObject.Properties["useResponsesImageTool"]) { [bool]$api.useResponsesImageTool } else { $true })
         editModel = $(if ($api.editModel) { [string]$api.editModel } else { "" })
       }
     }
   }
   return $items
+}
+
+function Normalize-ReasoningEffort($Value) {
+  $text = ([string]$(if ($Value) { $Value } else { "auto" })).Trim().ToLowerInvariant()
+  if ($text -in @("auto", "low", "medium", "high")) { return $text }
+  return "auto"
+}
+
+function Test-ReasoningEffortEnabled($Api) {
+  return (Normalize-ReasoningEffort $Api.reasoningEffort) -in @("low", "medium", "high")
+}
+
+function Test-LikelyOpenAiReasoningModel($Model) {
+  $text = ([string]$Model).ToLowerInvariant()
+  return ($text -match '^(o1|o3|o4)(-|$)' -or $text -match '^gpt-5(\.\d+)?(-|$)')
+}
+
+function Add-ReasoningEffort($RequestBody, $Api, [bool]$IsResponsesApi) {
+  if (!(Test-ReasoningEffortEnabled $Api) -or !(Test-LikelyOpenAiReasoningModel $Api.model)) { return }
+  $effort = Normalize-ReasoningEffort $Api.reasoningEffort
+  if ($IsResponsesApi) { $RequestBody["reasoning"] = [ordered]@{ effort = $effort } }
+  else { $RequestBody["reasoning_effort"] = $effort }
 }
 
 function Get-PublicLlmApis($Config) {
@@ -406,7 +509,7 @@ function Get-PublicLlmApis($Config) {
         name = $api.name
         model = $api.model
         endpoint = $api.endpoint
-        temperature = $(if ($null -ne $api.temperature) { [double]$api.temperature } else { 0.4 })
+        reasoningEffort = Normalize-ReasoningEffort $api.reasoningEffort
       }
     }
   }
@@ -444,10 +547,23 @@ function Read-ClientPromptRecords([string]$ClientId) {
   return @(Read-PromptRecords | Where-Object { $_.clientId -and $_.clientId -eq $ClientId })
 }
 
-function Get-ChatEndpoint($Endpoint) {
+function Get-ResponsesEndpoint($Endpoint) {
   $text = ([string]$Endpoint).Trim()
   if (!$text) { return "" }
   if ($text -match '/responses/?$') { return $text }
+  $base = $text -replace '/images?/(generations|edits)/?$', '' -replace '/chat/completions/?$', ''
+  return ($base.TrimEnd('/') + '/responses')
+}
+
+function Should-UseResponsesForReasoning($Api) {
+  return (Test-ReasoningEffortEnabled $Api) -and (Test-LikelyOpenAiReasoningModel $Api.model)
+}
+
+function Get-ChatEndpoint($Endpoint, $Api = $null) {
+  $text = ([string]$Endpoint).Trim()
+  if (!$text) { return "" }
+  if ($text -match '/responses/?$') { return $text }
+  if ($Api -and (Should-UseResponsesForReasoning $Api)) { return Get-ResponsesEndpoint $text }
   if ($text -match '/chat/completions/?$') { return $text }
   if ($text -match '/v1/?$') { return ($text.TrimEnd('/') + '/chat/completions') }
   return ($text.TrimEnd('/') + '/chat/completions')
@@ -526,7 +642,7 @@ function Parse-PromptCards([string]$Text) {
 }
 
 function Invoke-PromptOrchestratorLlm($Api, $Body) {
-  $endpoint = Get-ChatEndpoint $Api.endpoint
+  $endpoint = Get-ChatEndpoint $Api.endpoint $Api
   if (!$endpoint) { throw "LLM API 地址不能为空" }
   $isResponsesApi = $endpoint -match '/responses/?$'
   $systemText = Get-PromptSystemText ([string]$Body.mode)
@@ -565,7 +681,6 @@ imageCount: $(@(Get-ValueList $Body.imageDataUrls).Count)
   } else {
     $requestBody = [ordered]@{
       model = [string]$Api.model
-      temperature = $(if ($null -ne $Api.temperature) { [double]$Api.temperature } else { 0.4 })
       messages = @(
         [ordered]@{ role = "system"; content = $systemText.Trim() },
         [ordered]@{ role = "user"; content = @($content) }
@@ -573,6 +688,7 @@ imageCount: $(@(Get-ValueList $Body.imageDataUrls).Count)
       response_format = [ordered]@{ type = "json_object" }
     }
   }
+  Add-ReasoningEffort -RequestBody $requestBody -Api $Api -IsResponsesApi $isResponsesApi
   $headers = Get-AuthHeaders $Api
   $json = ($requestBody | ConvertTo-Json -Depth 30)
   $utf8Body = [Text.Encoding]::UTF8.GetBytes($json)
@@ -597,38 +713,31 @@ imageCount: $(@(Get-ValueList $Body.imageDataUrls).Count)
 }
 
 function Get-ImagesFromPayload($Payload) {
-  $images = @()
-  if ($Payload.data -and $Payload.data.Count -gt 0) {
-    foreach ($item in @($Payload.data)) {
-      if ($item.b64_json) { $images += "data:image/png;base64,$($item.b64_json)" }
-      elseif ($item.url) { $images += $item.url }
+  $images = New-Object System.Collections.Generic.List[string]
+  function Add-ImageValue($Value, [string]$Key = "") {
+    if ($null -eq $Value) { return }
+    if ($Value -is [string]) {
+      if ($Value -match '^(https?://|data:image/)') { $images.Add($Value); return }
+      if ($Key -match '^(b64_json|image_base64|base64|result)$' -and $Value -match '^[A-Za-z0-9+/=\r\n]+$' -and $Value.Length -gt 1000) {
+        $images.Add("data:image/png;base64,$($Value -replace '\s+', '')")
+      }
+      return
+    }
+    if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
+      foreach ($item in @($Value)) { Add-ImageValue $item $Key }
+      return
+    }
+    if ($Value.PSObject) {
+      foreach ($itemKey in @("url", "image", "image_url", "output_url", "b64_json", "image_base64", "base64", "result")) {
+        if ($Value.PSObject.Properties[$itemKey] -and $Value.$itemKey) { Add-ImageValue $Value.$itemKey $itemKey }
+      }
+      foreach ($itemKey in @("data", "images", "output", "outputs", "content")) {
+        if ($Value.PSObject.Properties[$itemKey] -and $Value.$itemKey) { Add-ImageValue $Value.$itemKey $itemKey }
+      }
     }
   }
-  if ($Payload.result -and $Payload.result.data -and $Payload.result.data.Count -gt 0) {
-    foreach ($item in @($Payload.result.data)) {
-      if ($item.b64_json) { $images += "data:image/png;base64,$($item.b64_json)" }
-      elseif ($item.url) { $images += $item.url }
-    }
-  }
-  if ($Payload.images) {
-    foreach ($item in @($Payload.images)) {
-      if ($item -is [string]) { $images += $item }
-      elseif ($item.url) { $images += $item.url }
-      elseif ($item.image_url) { $images += $item.image_url }
-      elseif ($item.output_url) { $images += $item.output_url }
-      elseif ($item.b64_json) { $images += "data:image/png;base64,$($item.b64_json)" }
-    }
-  }
-  if ($Payload.image) { $images += $Payload.image }
-  if ($Payload.image_url) { $images += $Payload.image_url }
-  if ($Payload.output_url) { $images += $Payload.output_url }
-  if ($Payload.url) { $images += $Payload.url }
-  if ($Payload.result.url) { $images += $Payload.result.url }
-  if ($Payload.result.image) { $images += $Payload.result.image }
-  if ($Payload.result.image_url) { $images += $Payload.result.image_url }
-  if ($Payload.result.output_url) { $images += $Payload.result.output_url }
-  if ($Payload.b64_json) { $images += "data:image/png;base64,$($Payload.b64_json)" }
-  return @($images)
+  Add-ImageValue $Payload
+  return @($images | Select-Object -Unique)
 }
 
 function Get-TaskId($Payload) {
@@ -685,14 +794,63 @@ function Save-GeneratedImages($Images) {
   return @($saved)
 }
 
-function Invoke-ImageApi($Api, [string]$Prompt, $Reference, [int]$Count, [string]$Quality) {
+function Invoke-OpenAIResponsesImageTool($Api, [string]$Prompt, $Refs, [string]$Size, [string]$Quality) {
+  $content = @([ordered]@{ type = "input_text"; text = $Prompt })
+  foreach ($ref in @(Get-ValueList $Refs)) {
+    $content += [ordered]@{ type = "input_image"; image_url = [string]$ref; detail = "auto" }
+  }
+  $ticketpro = Test-TicketproEndpoint $Api.endpoint
+  if ($ticketpro) {
+    $body = [ordered]@{
+      model = $Api.model
+      input = $(if ($content.Count -gt 1) { @([ordered]@{ role = "user"; content = @($content) }) } else { $Prompt })
+      store = $true
+    }
+    if ($Size) { $body["size"] = $Size }
+  } else {
+    $tool = [ordered]@{ type = "image_generation" }
+    if ($Size) { $tool["size"] = $Size }
+    if ($Quality) { $tool["quality"] = $Quality }
+    $body = [ordered]@{
+      model = $Api.model
+      input = @([ordered]@{ role = "user"; content = @($content) })
+      tools = @($tool)
+      tool_choice = [ordered]@{ type = "image_generation" }
+      store = $false
+    }
+  }
+  $json = ConvertTo-JsonText $body
+  $utf8Body = [Text.Encoding]::UTF8.GetBytes($json)
+  try {
+    $endpoint = Get-ResponsesEndpoint $Api.endpoint
+    $result = Invoke-RestMethod -Method Post -Uri $endpoint -Headers (Get-AuthHeaders $Api) -ContentType "application/json; charset=utf-8" -Body $utf8Body -TimeoutSec 180
+  } catch {
+    $detail = $_.Exception.Message
+    if ($_.Exception.Response) {
+      try {
+        $stream = $_.Exception.Response.GetResponseStream()
+        $reader = New-Object IO.StreamReader($stream, [Text.Encoding]::UTF8)
+        $text = $reader.ReadToEnd()
+        if ($text) { $detail = $text }
+      } catch {}
+    }
+    throw $detail
+  }
+  $images = @(Get-ImagesFromPayload $result)
+  if (!$images.Count) { throw "Responses image_generation 未返回可识别图片" }
+  return @($images)
+}
+
+function Invoke-ImageApi($Api, [string]$Prompt, $Reference, [int]$Count, [string]$Quality, [string]$RequestSize = "1024x1024") {
   if ($Count -lt 1) { $Count = 1 }
   if ($Count -gt 9) { $Count = 9 }
   $images = @()
   $headers = Get-AuthHeaders $Api
   $refs = @(Get-ValueList $Reference)
-  $isGptImage = Test-GptImageModel $Api.model
-  $requestSize = $(if ($Api.size) { [string]$Api.size } else { "1024x1024" })
+  $provider = $(if ($Api.provider) { ([string]$Api.provider).ToLowerInvariant() } else { "auto" })
+  $isGptImage = (Test-GptImageModel $Api.model) -or $provider -eq "openai"
+  $useResponsesImageTool = $(if ($Api.PSObject.Properties["useResponsesImageTool"]) { [bool]$Api.useResponsesImageTool } else { $true })
+  $requestSize = $(if ($RequestSize) { $RequestSize } else { Get-DefaultSize $Api })
   $qualityValue = $(if ($isGptImage) { $Quality } else { "" })
 
   for ($i = 1; $i -le $Count; $i++) {
@@ -700,8 +858,8 @@ function Invoke-ImageApi($Api, [string]$Prompt, $Reference, [int]$Count, [string
     if ($Count -gt 1) {
       $promptToSend = "$Prompt`n生成第 $i 张图：保持同一主题和比例，构图、细节和镜头语言做自然变化。"
     }
-    if ($isGptImage -and $refs.Count -gt 0) {
-      $images += @(Invoke-GptImageEdit -Api $Api -Prompt $promptToSend -Refs $refs -Size $requestSize -Quality $qualityValue)
+    if ($isGptImage -and $useResponsesImageTool -and $qualityValue -in @("low", "medium")) {
+      $images += @(Invoke-OpenAIResponsesImageTool -Api $Api -Prompt $promptToSend -Refs $refs -Size $requestSize -Quality $qualityValue)
       continue
     }
     $body = [ordered]@{
@@ -959,6 +1117,7 @@ function Handle-Request($Context) {
       $prompt = ([string]$body.prompt).Trim()
       $originalPrompt = ([string]$body.originalPrompt).Trim()
       $aspect = ([string]$body.aspect).Trim()
+      $requestedSize = ([string]$body.size).Trim()
       $modelId = ([string]$body.modelId).Trim()
       $reference = @()
       if ($body.reference -is [array]) {
@@ -978,9 +1137,10 @@ function Handle-Request($Context) {
       $config = Read-Config
       $api = @($config.apis) | Where-Object { $_.id -eq $modelId -and $_.enabled -ne $false } | Select-Object -First 1
       if (!$api) { Send-Json $res 400 @{ error = "请选择可用的生图模型" }; return }
+      try { $requestSize = Get-RequestSize -Api $api -RequestedSize $requestedSize } catch { Send-Json $res 400 @{ error = $_.Exception.Message }; return }
       $time = [DateTime]::UtcNow.ToString("o")
       try {
-        $rawImages = @(Invoke-ImageApi -Api $api -Prompt $prompt -Reference $reference -Count $count -Quality $quality)
+        $rawImages = @(Invoke-ImageApi -Api $api -Prompt $prompt -Reference $reference -Count $count -Quality $quality -RequestSize $requestSize)
         $images = @(Save-GeneratedImages $rawImages)
         Add-Log ([ordered]@{
           time = $time
@@ -991,6 +1151,7 @@ function Handle-Request($Context) {
           modelId = $api.id
           prompt = $(if ($originalPrompt) { $originalPrompt } else { $prompt })
           aspect = $aspect
+          size = $requestSize
           quality = $quality
           referenceName = $(if ($referenceName) { $referenceName } else { "无" })
           referencePreviews = @($referencePreviews)
@@ -1009,6 +1170,7 @@ function Handle-Request($Context) {
           modelId = $api.id
           prompt = $(if ($originalPrompt) { $originalPrompt } else { $prompt })
           aspect = $aspect
+          size = $requestSize
           quality = $quality
           referenceName = $(if ($referenceName) { $referenceName } else { "无" })
           referencePreviews = @($referencePreviews)
@@ -1099,6 +1261,31 @@ function Handle-Request($Context) {
       return
     }
 
+    if ($req.HttpMethod -eq "POST" -and $path -eq "/api/admin/apis/discover-sizes") {
+      if (!(Test-Admin $req)) { Send-Json $res 401 @{ error = "请先登录管理员账号" }; return }
+      $body = Read-Body $req
+      $config = Read-Config
+      $current = @($config.apis) | Where-Object { $_.id -eq ([string]$body.id) } | Select-Object -First 1
+      $apiKey = ([string]$body.apiKey).Trim()
+      if ($apiKey -eq "********" -and $current) { $apiKey = $current.apiKey }
+      $api = [pscustomobject]@{
+        id = $(if ($body.id) { [string]$body.id } else { [guid]::NewGuid().ToString("N") })
+        name = ([string]$body.name).Trim()
+        model = ([string]$body.model).Trim()
+        endpoint = ([string]$body.endpoint).Trim()
+        apiKey = $apiKey
+        size = $(if ($body.size) { ([string]$body.size).Trim() } else { "1024x1024" })
+        supportedSizes = @(@($body.supportedSizes))
+        provider = $(if ($body.provider) { [string]$body.provider } else { "auto" })
+        editModel = $(if ($body.editModel) { ([string]$body.editModel).Trim() } else { "" })
+      }
+      if (!$api.model) { Send-Json $res 400 @{ error = "模型 ID 不能为空" }; return }
+      if (!$api.endpoint) { Send-Json $res 400 @{ error = "API 地址不能为空" }; return }
+      if (!$api.apiKey) { Send-Json $res 400 @{ error = "API Key 不能为空" }; return }
+      Send-Json $res 200 (Discover-ImageSizes $api)
+      return
+    }
+
     if ($req.HttpMethod -eq "POST" -and $path -eq "/api/admin/apis") {
       if (!(Test-Admin $req)) { Send-Json $res 401 @{ error = "请先登录管理员账号" }; return }
       $body = Read-Body $req
@@ -1110,13 +1297,18 @@ function Handle-Request($Context) {
         model = ([string]$body.model).Trim()
         endpoint = ([string]$body.endpoint).Trim()
         apiKey = ([string]$body.apiKey).Trim()
-        size = $(if ($body.size) { ([string]$body.size).Trim() } else { "1024x1024" })
+        size = Get-NormalizedImageSize $(if ($body.size) { ([string]$body.size).Trim() } else { "1024x1024" })
+        supportedSizes = @(Get-SupportedSizes $body)
+        sizeSource = $(if ($body.sizeSource) { ([string]$body.sizeSource).Trim() } else { "manual" })
+        sizeUpdatedAt = $(if ($body.sizeUpdatedAt) { ([string]$body.sizeUpdatedAt).Trim() } else { [DateTime]::UtcNow.ToString("o") })
+        sizeDiscoveryNote = $(if ($body.sizeDiscoveryNote) { ([string]$body.sizeDiscoveryNote).Trim() } else { "手动配置支持尺寸" })
         requestModes = @(@($body.requestModes) | Where-Object { $_ -in @("generation", "edit") } | ForEach-Object { [string]$_ })
         provider = $(if ($body.provider) { [string]$body.provider } else { "auto" })
         useResponsesImageTool = [bool]$body.useResponsesImageTool
         editModel = $(if ($body.editModel) { ([string]$body.editModel).Trim() } else { "" })
         enabled = @(@($body.requestModes) | Where-Object { $_ -in @("generation", "edit") }).Count -gt 0
       }
+      if (!$incoming.size -or $incoming.supportedSizes -notcontains $incoming.size) { $incoming.size = $incoming.supportedSizes[0] }
       $current = @($config.apis) | Where-Object { $_.id -eq $id } | Select-Object -First 1
       if ($incoming.apiKey -eq "********" -and $current) { $incoming.apiKey = $current.apiKey }
       if (!$incoming.name) { Send-Json $res 400 @{ error = "模型显示名称不能为空" }; return }
@@ -1142,7 +1334,7 @@ function Handle-Request($Context) {
         model = ([string]$body.model).Trim()
         endpoint = ([string]$body.endpoint).Trim()
         apiKey = ([string]$body.apiKey).Trim()
-        temperature = $(if ($null -ne $body.temperature -and "$($body.temperature)".Trim()) { [double]$body.temperature } else { 0.4 })
+        reasoningEffort = Normalize-ReasoningEffort $body.reasoningEffort
         enabled = ($body.enabled -ne $false)
       }
       $current = @($config.llmApis) | Where-Object { $_.id -eq $id } | Select-Object -First 1

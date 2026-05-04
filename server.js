@@ -124,6 +124,7 @@ function compactRecord(entry) {
     modelId: entry.modelId,
     prompt: entry.prompt,
     aspect: entry.aspect,
+    size: entry.size,
     quality: entry.quality,
     referenceName: entry.referenceName,
     referencePreviews: entry.referencePreviews,
@@ -136,7 +137,7 @@ function compactRecord(entry) {
 
 function sanitizeQuality(value) {
   const text = String(value || "").trim().toLowerCase();
-  return text === "low" || text === "high" ? text : "";
+  return ["low", "medium", "high"].includes(text) ? text : "";
 }
 
 function appendLog(entry) {
@@ -325,16 +326,68 @@ function apiRequestMode(endpoint) {
   return /\/images?\/edits?\/?$/.test(text) ? "edit" : "generation";
 }
 
+function normalizeImageSize(value) {
+  const text = String(value || "").trim().toLowerCase().replace(/[×＊*]/g, "x");
+  if (!text) return "";
+  if (text === "auto") return "auto";
+  const match = text.match(/^(\d{2,5})\s*x\s*(\d{2,5})$/);
+  if (!match) return "";
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 64 || height < 64 || width > 8192 || height > 8192) return "";
+  return `${width}x${height}`;
+}
+
+function normalizeSupportedSizes(api = {}) {
+  const raw = [];
+  if (Array.isArray(api.supportedSizes)) raw.push(...api.supportedSizes);
+  else if (typeof api.supportedSizes === "string") raw.push(...api.supportedSizes.split(/[\n,，;；]+/));
+  if (api.size) raw.push(api.size);
+  const sizes = raw.map(normalizeImageSize).filter(Boolean);
+  const unique = [...new Set(sizes)];
+  return unique.length ? unique : ["1024x1024"];
+}
+
+function getDefaultSize(api = {}) {
+  const supportedSizes = normalizeSupportedSizes(api);
+  const defaultSize = normalizeImageSize(api.size);
+  return defaultSize && supportedSizes.includes(defaultSize) ? defaultSize : supportedSizes[0] || "1024x1024";
+}
+
+function pickRequestSize(api, requestedSize) {
+  const supportedSizes = normalizeSupportedSizes(api);
+  const raw = String(requestedSize || "").trim();
+  const normalized = normalizeImageSize(raw);
+  if (raw && !normalized) throw new Error("图片尺寸格式不正确，请选择当前模型支持的尺寸");
+  if (normalized && !supportedSizes.includes(normalized)) throw new Error(`所选尺寸 ${normalized} 不在当前模型支持列表中`);
+  return normalized || getDefaultSize(api);
+}
+
+function aspectFromSize(size) {
+  const match = String(size || "").match(/^(\d+)x(\d+)$/i);
+  if (!match) return "";
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!width || !height) return "";
+  const gcd = (a, b) => b ? gcd(b, a % b) : a;
+  const divisor = gcd(width, height);
+  return `${width / divisor}:${height / divisor}`;
+}
+
 function publicApis(config) {
   return (config.apis || [])
     .filter((api) => api.enabled !== false)
     .map((api) => {
       const requestModes = normalizeRequestModes(api);
+      const supportedSizes = normalizeSupportedSizes(api);
       return {
         id: api.id,
         name: api.name,
         model: api.model,
-        size: api.size || "1024x1024",
+        size: getDefaultSize(api),
+        supportedSizes,
+        sizeSource: api.sizeSource || (api.supportedSizes ? "manual" : "legacy"),
+        sizeDiscoveryNote: api.sizeDiscoveryNote || "",
         requestMode: requestModes[0] || apiRequestMode(api.endpoint),
         requestModes,
         provider: normalizeApiProvider(api.provider),
@@ -349,6 +402,11 @@ function ensureLlmApis(config) {
   return config.llmApis;
 }
 
+function normalizeReasoningEffort(value) {
+  const text = String(value || "auto").trim().toLowerCase();
+  return ["auto", "low", "medium", "high"].includes(text) ? text : "auto";
+}
+
 function publicLlmApis(config) {
   return ensureLlmApis(config)
     .filter((api) => api.enabled !== false)
@@ -357,20 +415,26 @@ function publicLlmApis(config) {
       name: api.name,
       model: api.model,
       endpoint: api.endpoint,
-      temperature: Number(api.temperature ?? 0.4)
+      reasoningEffort: normalizeReasoningEffort(api.reasoningEffort)
     }));
 }
 
 function sanitizeApi(api) {
+  const supportedSizes = normalizeSupportedSizes(api);
+  const requestedDefault = normalizeImageSize(api.size);
   const normalized = {
     id: api.id || crypto.randomUUID(),
     name: String(api.name || "").trim(),
     model: String(api.model || "").trim(),
     endpoint: String(api.endpoint || "").trim(),
     apiKey: String(api.apiKey || "").trim(),
-    size: String(api.size || "1024x1024").trim(),
+    size: requestedDefault && supportedSizes.includes(requestedDefault) ? requestedDefault : supportedSizes[0],
+    supportedSizes,
+    sizeSource: String(api.sizeSource || (api.supportedSizes ? "manual" : "legacy")).trim(),
+    sizeUpdatedAt: String(api.sizeUpdatedAt || "").trim(),
+    sizeDiscoveryNote: String(api.sizeDiscoveryNote || "").trim(),
     provider: normalizeApiProvider(api.provider),
-    useResponsesImageTool: Boolean(api.useResponsesImageTool),
+    useResponsesImageTool: api.useResponsesImageTool !== false && api.useResponsesImageTool !== "false" && api.useResponsesImageTool !== 0 && api.useResponsesImageTool !== "0" && api.responsesImageTool !== false,
     editModel: String(api.editModel || "").trim(),
     enabled: api.enabled !== false
   };
@@ -394,7 +458,7 @@ function sanitizeLlmApi(api) {
     model: String(api.model || "").trim(),
     endpoint: String(api.endpoint || "").trim(),
     apiKey: String(api.apiKey || "").trim(),
-    temperature: Number(api.temperature ?? 0.4),
+    reasoningEffort: normalizeReasoningEffort(api.reasoningEffort),
     enabled: api.enabled !== false
   };
 }
@@ -480,6 +544,123 @@ function isTicketproEndpoint(endpoint) {
   } catch {
     return false;
   }
+}
+
+function modelMetadataEndpointFor(endpoint) {
+  try {
+    const url = new URL(endpoint);
+    url.pathname = url.pathname
+      .replace(/\/images?\/(?:generations|edits)\/?$/i, "")
+      .replace(/\/chat\/completions\/?$/i, "")
+      .replace(/\/responses\/?$/i, "")
+      .replace(/\/$/, "") + "/models";
+    return url.toString();
+  } catch {
+    const base = String(endpoint || "").replace(/\/images?\/(?:generations|edits)\/?$/i, "").replace(/\/chat\/completions\/?$/i, "").replace(/\/responses\/?$/i, "").replace(/\/$/, "");
+    return `${base}/models`;
+  }
+}
+
+function inferImageProvider(api = {}) {
+  const provider = normalizeApiProvider(api.provider);
+  const model = String(api.model || "").toLowerCase();
+  const editModel = String(api.editModel || "").toLowerCase();
+  const endpoint = String(api.endpoint || "").toLowerCase();
+  if (provider !== "auto") return provider;
+  if (isGptImageModel(model) || endpoint.includes("openai") || endpoint.includes("ticketpro")) return "openai";
+  if (model.includes("seedream") || model.includes("seededit") || editModel.includes("seededit") || endpoint.includes("volces") || endpoint.includes("ark")) return "ark";
+  return "generic";
+}
+
+function imageSizePresetFor(api = {}) {
+  const provider = inferImageProvider(api);
+  const model = String(api.model || "").toLowerCase();
+  if (provider === "openai") {
+    if (model.includes("gpt-image")) return ["1024x1024", "1024x1536", "1536x1024"];
+    if (model.includes("dall-e-3")) return ["1024x1024", "1024x1792", "1792x1024"];
+    if (model.includes("dall-e-2")) return ["256x256", "512x512", "1024x1024"];
+  }
+  if (provider === "ark") return ["1024x1024", "1024x1536", "1536x1024", "768x1344", "1344x768"];
+  return [];
+}
+
+function collectSizesFromValue(value, result = []) {
+  if (!value) return result;
+  if (typeof value === "string") {
+    const size = normalizeImageSize(value);
+    if (size) result.push(size);
+    else value.split(/[\n,，;；\s]+/).forEach((part) => {
+      const parsed = normalizeImageSize(part);
+      if (parsed) result.push(parsed);
+    });
+    return result;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectSizesFromValue(item, result));
+    return result;
+  }
+  if (typeof value === "object") {
+    ["sizes", "supported_sizes", "supportedSizes", "image_sizes", "imageSizes"].forEach((key) => collectSizesFromValue(value[key], result));
+    collectSizesFromValue(value.capabilities?.image?.sizes, result);
+    collectSizesFromValue(value.capabilities?.images?.sizes, result);
+  }
+  return result;
+}
+
+function extractSizesFromModelMetadata(payload, modelId) {
+  const items = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : Array.isArray(payload) ? payload : [];
+  const target = items.find((item) => String(item?.id || item?.model || item?.name || "") === String(modelId || "")) || items[0] || payload;
+  return [...new Set(collectSizesFromValue(target).map(normalizeImageSize).filter(Boolean))];
+}
+
+async function discoverImageSizes(api) {
+  const preset = imageSizePresetFor(api);
+  if (preset.length) {
+    return {
+      supportedSizes: preset,
+      defaultSize: preset[0],
+      source: "preset",
+      note: "由模型适配器预设生成支持尺寸",
+      warnings: []
+    };
+  }
+
+  const warnings = [];
+  if (api.endpoint && api.apiKey) {
+    try {
+      const response = await fetch(modelMetadataEndpointFor(api.endpoint), { headers: authHeaders(api) });
+      const text = await response.text();
+      let payload;
+      try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+      if (response.ok) {
+        const sizes = extractSizesFromModelMetadata(payload, api.model);
+        if (sizes.length) {
+          return {
+            supportedSizes: sizes,
+            defaultSize: sizes[0],
+            source: "discovered",
+            note: "从上游模型元数据读取到支持尺寸",
+            warnings
+          };
+        }
+        warnings.push("上游模型元数据未包含可识别的尺寸字段");
+      } else {
+        warnings.push(payload.error?.message || payload.message || text || `HTTP ${response.status}`);
+      }
+    } catch (error) {
+      warnings.push(error.message);
+    }
+  } else {
+    warnings.push("缺少 endpoint 或 API Key，无法请求上游模型元数据");
+  }
+
+  return {
+    supportedSizes: ["1024x1024"],
+    defaultSize: "1024x1024",
+    source: "fallback",
+    note: "上游未暴露尺寸，请管理员手动确认后保存",
+    warnings
+  };
 }
 
 function dataUrlToFile(dataUrl, index) {
@@ -696,7 +877,8 @@ async function callOpenAIResponsesImageTool(api, promptJob, refs, size, quality)
     ? {
       model: api.model,
       input: refs.length ? [{ role: "user", content }] : promptTextForImage(promptJob),
-      store: true
+      store: true,
+      ...(size ? { size } : {})
     }
     : {
       model: api.model,
@@ -764,12 +946,11 @@ function normalizePromptJobs(prompt, promptOutputs, count) {
   }));
 }
 
-async function callImageApi(api, prompt, references, count, quality, promptOutputs = []) {
+async function callImageApi(api, prompt, references, count, quality, promptOutputs = [], requestSize = "1024x1024") {
   const outputs = [];
   const refs = valueList(references);
   const promptJobs = normalizePromptJobs(prompt, promptOutputs, count);
   const gptImage = isGptImageModel(api.model) || normalizeApiProvider(api.provider) === "openai";
-  const requestSize = api.size || "1024x1024";
   const qualityValue = gptImage ? sanitizeQuality(quality) : "";
   const provider = normalizeApiProvider(api.provider);
 
@@ -779,12 +960,8 @@ async function callImageApi(api, prompt, references, count, quality, promptOutpu
       outputs.push(...await callArkSeedreamImage(api, promptJob, refs, requestSize));
       continue;
     }
-    if (gptImage && api.useResponsesImageTool) {
+    if (gptImage && api.useResponsesImageTool && ["low", "medium"].includes(qualityValue)) {
       outputs.push(...await callOpenAIResponsesImageTool(api, promptJob, refs, requestSize, qualityValue));
-      continue;
-    }
-    if (gptImage && refs.length) {
-      outputs.push(...await callGptImageEdit(api, promptToSend, refs, requestSize, qualityValue));
       continue;
     }
     const body = {
@@ -827,10 +1004,15 @@ async function callImageApi(api, prompt, references, count, quality, promptOutpu
   return outputs;
 }
 
-function chatEndpointFor(endpoint) {
+function shouldUseResponsesForReasoning(api) {
+  return isReasoningEffortEnabled(api) && isLikelyOpenAiReasoningModel(api?.model);
+}
+
+function chatEndpointFor(endpoint, api = null) {
   const text = String(endpoint || "").trim();
   if (!text) return "";
   if (/\/responses\/?$/i.test(text)) return text;
+  if (shouldUseResponsesForReasoning(api)) return responsesEndpointFor(text);
   if (/\/chat\/completions\/?$/i.test(text)) return text;
   if (/\/v1\/?$/i.test(text)) return `${text.replace(/\/$/, "")}/chat/completions`;
   return `${text.replace(/\/$/, "")}/chat/completions`;
@@ -989,8 +1171,24 @@ function parsePromptCards(text) {
   return parsePromptAnalysis(text).cards;
 }
 
+function isReasoningEffortEnabled(api) {
+  return ["low", "medium", "high"].includes(normalizeReasoningEffort(api?.reasoningEffort));
+}
+
+function isLikelyOpenAiReasoningModel(model) {
+  const text = String(model || "").toLowerCase();
+  return /^(o1|o3|o4)(-|$)/.test(text) || /^gpt-5(?:\.\d+)?(?:-|$)/.test(text);
+}
+
+function applyReasoningEffort(requestBody, api, isResponsesApi) {
+  if (!isReasoningEffortEnabled(api) || !isLikelyOpenAiReasoningModel(api?.model)) return;
+  const effort = normalizeReasoningEffort(api.reasoningEffort);
+  if (isResponsesApi) requestBody.reasoning = { effort };
+  else requestBody.reasoning_effort = effort;
+}
+
 async function callPromptLlm(api, body) {
-  const endpoint = chatEndpointFor(api.endpoint);
+  const endpoint = chatEndpointFor(api.endpoint, api);
   if (!endpoint) throw new Error("LLM API 地址不能为空");
   const isResponsesApi = /\/responses\/?$/i.test(endpoint);
   const content = [{
@@ -1026,7 +1224,6 @@ async function callPromptLlm(api, body) {
   } else {
     requestBody = {
       model: api.model,
-      temperature: Number(api.temperature ?? 0.4),
       messages: [
         { role: "system", content: promptSystemText(body.mode) },
         { role: "user", content }
@@ -1034,6 +1231,7 @@ async function callPromptLlm(api, body) {
       response_format: { type: "json_object" }
     };
   }
+  applyReasoningEffort(requestBody, api, isResponsesApi);
   const response = await fetch(endpoint, {
     method: "POST",
     headers: authHeaders(api, { "Content-Type": "application/json; charset=utf-8" }),
@@ -1350,6 +1548,7 @@ async function route(req, res) {
       const aspect = String(body.aspect || "").trim();
       const quality = sanitizeQuality(body.quality);
       const count = Math.max(1, Math.min(9, Number(body.count) || 1));
+      const requestedSize = String(body.size || "").trim();
       const promptOutputs = Array.isArray(body.promptOutputs) ? body.promptOutputs.map(normalizePromptOutput).filter((output) => output.prompt) : [];
       if (!visitor) return sendJson(res, 400, { error: "请先填写访问者身份" });
       if (!prompt) return sendJson(res, 400, { error: "Prompt 不能为空" });
@@ -1357,10 +1556,16 @@ async function route(req, res) {
       const config = readConfig();
       const api = (config.apis || []).find((item) => item.id === modelId && item.enabled !== false);
       if (!api) return sendJson(res, 400, { error: "请选择可用的生图模型" });
+      let requestSize;
+      try {
+        requestSize = pickRequestSize(api, requestedSize);
+      } catch (error) {
+        return sendJson(res, 400, { error: error.message });
+      }
 
       const startedAt = new Date().toISOString();
       try {
-        const rawImages = await callImageApi(api, prompt, references, count, quality, promptOutputs);
+        const rawImages = await callImageApi(api, prompt, references, count, quality, promptOutputs, requestSize);
         const images = await persistGeneratedImages(rawImages);
         await appendLog({
           time: startedAt,
@@ -1370,7 +1575,8 @@ async function route(req, res) {
           model: api.name,
           modelId: api.id,
           prompt: originalPrompt || prompt,
-          aspect,
+          aspect: aspect || aspectFromSize(requestSize),
+          size: requestSize,
           quality,
           referenceName: referenceName || "无",
           referencePreviews: refPreviews,
@@ -1389,7 +1595,8 @@ async function route(req, res) {
           model: api.name,
           modelId: api.id,
           prompt: originalPrompt || prompt,
-          aspect,
+          aspect: aspect || aspectFromSize(requestSize),
+          size: requestSize,
           quality,
           referenceName: referenceName || "无",
           referencePreviews: refPreviews,
@@ -1543,6 +1750,19 @@ async function route(req, res) {
       else config.apis.push(incoming);
       await saveConfig(config);
       return sendJson(res, 200, { ok: true, api: { ...incoming, apiKey: "********" } });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/admin/apis/discover-sizes") {
+      if (!requireAdmin(req, res)) return;
+      const body = await getBody(req);
+      const config = readConfig();
+      const current = body.id ? (config.apis || []).find((api) => api.id === body.id) : null;
+      const api = sanitizeApi({ ...current, ...body, apiKey: body.apiKey === "********" && current ? current.apiKey : body.apiKey });
+      if (!api.model) return sendJson(res, 400, { error: "模型 ID 不能为空" });
+      if (!api.endpoint) return sendJson(res, 400, { error: "API 地址不能为空" });
+      if (!api.apiKey) return sendJson(res, 400, { error: "API Key 不能为空" });
+      const result = await discoverImageSizes(api);
+      return sendJson(res, 200, result);
     }
 
     if (req.method === "POST" && url.pathname === "/api/admin/llm-apis") {
