@@ -1,4 +1,4 @@
-﻿{
+{
   "admin": {
     "username": "admin",
     "salt": "replace_with_random_hex_salt",
@@ -25,12 +25,39 @@
   },
   "apis": [
     {
-      "id": "example-model-id",
-      "name": "Example Model",
+      "id": "example-gpt-image",
+      "name": "GPT Image",
       "model": "gpt-image-1",
-      "endpoint": "https://your-provider.example.com/v1/images/generations",
+      "endpoint": "https://api.openai.com/v1",
       "apiKey": "sk-or-provider-key",
       "size": "1024x1024",
+      "requestModes": ["generation", "edit"],
+      "provider": "openai",
+      "useResponsesImageTool": false,
+      "enabled": true
+    },
+    {
+      "id": "example-ark-seedream",
+      "name": "Ark Seedream",
+      "model": "seedream-3-0-t2i-250201",
+      "editModel": "doubao-seededit-3-0-i2i-250628",
+      "endpoint": "https://ark.cn-beijing.volces.com/api/v3/images/generations",
+      "apiKey": "ark-provider-key",
+      "size": "1024x1024",
+      "requestModes": ["generation", "edit"],
+      "provider": "ark",
+      "useResponsesImageTool": false,
+      "enabled": true
+    }
+  ],
+  "llmApis": [
+    {
+      "id": "example-llm",
+      "name": "Prompt LLM",
+      "model": "gpt-4o",
+      "endpoint": "https://api.openai.com/v1/chat/completions",
+      "apiKey": "sk-llm-key",
+      "temperature": 0.4,
       "enabled": true
     }
   ]

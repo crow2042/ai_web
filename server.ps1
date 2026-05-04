@@ -388,6 +388,9 @@ function Get-PublicApis($Config) {
         size = $(if ($api.size) { $api.size } else { "1024x1024" })
         requestModes = @($requestModes)
         requestMode = $requestModes[0]
+        provider = $(if ($api.provider) { [string]$api.provider } else { "auto" })
+        useResponsesImageTool = [bool]$api.useResponsesImageTool
+        editModel = $(if ($api.editModel) { [string]$api.editModel } else { "" })
       }
     }
   }
@@ -451,38 +454,20 @@ function Get-ChatEndpoint($Endpoint) {
 }
 
 function Get-PromptSystemText([string]$Mode) {
-  if ($Mode -eq "edit") {
-    return @"
-你是图像任务 Prompt 编排器。
-你不会生成图片，你只输出结构化 prompt 文本。
-当前模式是 edit。
-你必须只输出 1 张卡片，内容为自然语言 Prompt，用于直接改图。
-输出必须是严格 JSON，对象结构为 {"cards":[{"title":"","subtitle":"","content":""}]}。
-不要输出 markdown 代码块，不要输出额外解释。
-卡片 content 只能是自然语言 Prompt，不要输出 JSON，不要输出字段名。
-Prompt 要清楚表达：基于上传原图进行局部修改、保留什么、修改什么、未提及区域不变、光影材质边缘自然融合、负向约束。
-"@
-  }
-  if ($Mode -eq "reference") {
-    return @"
-你是图像任务 Prompt 编排器。
-你不会生成图片，你只输出结构化 prompt 文本。
-当前模式是 reference。
-你必须只输出 1 张卡片，内容为自然语言 Prompt，用于参考图生图。
-输出必须是严格 JSON，对象结构为 {"cards":[{"title":"","subtitle":"","content":""}]}。
-不要输出 markdown 代码块，不要输出额外解释。
-卡片 content 只能是自然语言 Prompt，不要输出 JSON，不要输出字段名。
-Prompt 要清楚表达参考图如何使用、主体、风格、构图、材质、特效和负向约束。
-"@
-  }
   return @"
-你是图像任务 Prompt 编排器。
-你不会生成图片，你只输出结构化 prompt 文本。
-当前模式是 text。
-你必须只输出 1 张卡片，内容为自然语言 Prompt，用于纯文生图。
-输出必须是严格 JSON，对象结构为 {"cards":[{"title":"","subtitle":"","content":""}]}。
-不要输出 markdown 代码块，不要输出额外解释。
-卡片 content 只能是自然语言 Prompt，不要输出 JSON，不要输出字段名。
+# image-prompt-orchestrator 核心规则
+你是图像任务 Prompt 编排器。你不会生成图片，只负责判断任务类型并输出最终发给生图模型的提示词。
+
+必须先判断用户是否提供参考图、是“改原图”还是“参考风格/质感/构图生成新图”。如果意图不明确，必须先反问，不要输出可生图的 outputs。
+
+任务类型：image_edit 表示保留原图主体/比例/构图只修改某处；img2img 表示参考图风格/质感重新生成新设计；text2img 表示纯文字生成。
+
+输出策略：改图只输出 1 个 output，format=json，mode=image_edit；参考图 + 生图必须输出 2 个 outputs：_json JSON 版和 _plain 自然语言版；纯文生图默认只输出 1 个 plain output。不要把 JSON 和自然语言混在同一个 output 中。
+
+只返回严格 JSON，不要 markdown，不要解释。格式：{"summary":"一句话中文总结","needs_clarification":false,"clarification_question":"","outputs":[{"mode":"text2img | img2img | image_edit","format":"json | plain","filename_suffix":"_json | _plain |","target_width":0,"target_height":0,"aspect_ratio":"16:9","prompt":"最终发给生图模型的提示词；format=json 时这里必须是 JSON 字符串","negative_prompt":""}]}
+needs_clarification=true 时 outputs 必须是 []。
+
+当前 UI 模式是 $Mode，它是强提示但不是绝对命令；如果用户描述与 UI 模式冲突，以用户真实意图和是否提供参考图为准。
 "@
 }
 
@@ -1127,6 +1112,9 @@ function Handle-Request($Context) {
         apiKey = ([string]$body.apiKey).Trim()
         size = $(if ($body.size) { ([string]$body.size).Trim() } else { "1024x1024" })
         requestModes = @(@($body.requestModes) | Where-Object { $_ -in @("generation", "edit") } | ForEach-Object { [string]$_ })
+        provider = $(if ($body.provider) { [string]$body.provider } else { "auto" })
+        useResponsesImageTool = [bool]$body.useResponsesImageTool
+        editModel = $(if ($body.editModel) { ([string]$body.editModel).Trim() } else { "" })
         enabled = @(@($body.requestModes) | Where-Object { $_ -in @("generation", "edit") }).Count -gt 0
       }
       $current = @($config.apis) | Where-Object { $_.id -eq $id } | Select-Object -First 1

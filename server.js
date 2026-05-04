@@ -71,6 +71,20 @@ function sanitizeAdminUser(input = {}) {
   };
 }
 
+function normalizeApiProvider(value) {
+  const text = String(value || "auto").trim().toLowerCase();
+  return ["auto", "generic", "openai", "ark"].includes(text) ? text : "auto";
+}
+
+function normalizeRequestModes(api) {
+  const modes = Array.isArray(api?.requestModes)
+    ? api.requestModes
+    : api?.requestMode
+      ? [api.requestMode]
+      : [apiRequestMode(api?.endpoint)];
+  return [...new Set(modes.map((mode) => String(mode || "").trim()).filter((mode) => mode === "generation" || mode === "edit"))];
+}
+
 function normalizeConfig(config) {
   if (!config || typeof config !== "object") config = {};
   if (!config.admin || typeof config.admin !== "object") {
@@ -78,6 +92,7 @@ function normalizeConfig(config) {
     config.admin = { username: "admin", salt, hash: hashPassword("1596357", salt) };
   }
   if (!Array.isArray(config.apis)) config.apis = [];
+  config.apis = config.apis.map(sanitizeApi);
   if (!Array.isArray(config.llmApis)) config.llmApis = [];
   if (!Array.isArray(config.adminUsers)) config.adminUsers = [];
   config.adminUsers = config.adminUsers
@@ -313,13 +328,20 @@ function apiRequestMode(endpoint) {
 function publicApis(config) {
   return (config.apis || [])
     .filter((api) => api.enabled !== false)
-    .map((api) => ({
-      id: api.id,
-      name: api.name,
-      model: api.model,
-      size: api.size || "1024x1024",
-      requestMode: apiRequestMode(api.endpoint)
-    }));
+    .map((api) => {
+      const requestModes = normalizeRequestModes(api);
+      return {
+        id: api.id,
+        name: api.name,
+        model: api.model,
+        size: api.size || "1024x1024",
+        requestMode: requestModes[0] || apiRequestMode(api.endpoint),
+        requestModes,
+        provider: normalizeApiProvider(api.provider),
+        useResponsesImageTool: Boolean(api.useResponsesImageTool),
+        editModel: api.editModel || ""
+      };
+    });
 }
 
 function ensureLlmApis(config) {
@@ -340,15 +362,21 @@ function publicLlmApis(config) {
 }
 
 function sanitizeApi(api) {
-  return {
+  const normalized = {
     id: api.id || crypto.randomUUID(),
     name: String(api.name || "").trim(),
     model: String(api.model || "").trim(),
     endpoint: String(api.endpoint || "").trim(),
     apiKey: String(api.apiKey || "").trim(),
     size: String(api.size || "1024x1024").trim(),
+    provider: normalizeApiProvider(api.provider),
+    useResponsesImageTool: Boolean(api.useResponsesImageTool),
+    editModel: String(api.editModel || "").trim(),
     enabled: api.enabled !== false
   };
+  normalized.requestModes = normalizeRequestModes({ ...api, endpoint: normalized.endpoint });
+  normalized.requestMode = normalized.requestModes[0] || apiRequestMode(normalized.endpoint);
+  return normalized;
 }
 
 function validateApi(api) {
@@ -419,6 +447,41 @@ function imageEndpointFor(endpoint, action) {
   }
 }
 
+function responsesEndpointFor(endpoint) {
+  try {
+    const url = new URL(endpoint);
+    url.pathname = url.pathname
+      .replace(/\/images?\/(?:generations|edits)\/?$/i, "")
+      .replace(/\/chat\/completions\/?$/i, "")
+      .replace(/\/responses\/?$/i, "")
+      .replace(/\/$/, "") + "/responses";
+    return url.toString();
+  } catch {
+    const base = String(endpoint || "").replace(/\/images?\/(?:generations|edits)\/?$/i, "").replace(/\/chat\/completions\/?$/i, "").replace(/\/responses\/?$/i, "").replace(/\/$/, "");
+    return `${base}/responses`;
+  }
+}
+
+function rawBase64FromDataUrl(value) {
+  const match = String(value || "").match(/^data:[^;,]+;base64,(.+)$/);
+  return match ? match[1] : String(value || "");
+}
+
+function promptTextForImage(promptJob) {
+  const prompt = String(promptJob?.prompt || "").trim();
+  const negative = String(promptJob?.negative_prompt || "").trim();
+  if (!negative || promptJob?.format === "json" || prompt.startsWith("{")) return prompt;
+  return `${prompt}\n\nNegative prompt: ${negative}`;
+}
+
+function isTicketproEndpoint(endpoint) {
+  try {
+    return new URL(endpoint).hostname.toLowerCase() === "hk.ticketpro.cc";
+  } catch {
+    return false;
+  }
+}
+
 function dataUrlToFile(dataUrl, index) {
   const match = String(dataUrl || "").match(/^data:([^;,]+);base64,(.+)$/);
   if (!match) return null;
@@ -432,32 +495,51 @@ function dataUrlToFile(dataUrl, index) {
 }
 
 async function callGptImageEdit(api, prompt, refs, size, quality) {
-  const form = new FormData();
-  form.append("model", api.model);
-  form.append("prompt", prompt);
-  form.append("n", "1");
-  form.append("size", size);
-  if (quality) form.append("quality", quality);
-
-  let imageCount = 0;
-  refs.forEach((ref, index) => {
-    const file = dataUrlToFile(ref, index);
-    if (file) {
-      form.append("image", new Blob([file.bytes], { type: file.mime }), file.name);
-      imageCount += 1;
-    } else if (/^https?:\/\//i.test(ref)) {
-      form.append("image_url", ref);
-      imageCount += 1;
-    }
-  });
-  if (!imageCount) return [];
-
   const endpoint = imageEndpointFor(api.endpoint, "edits");
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: authHeaders(api),
-    body: form
-  });
+  let response;
+  if (isTicketproEndpoint(api.endpoint)) {
+    const images = refs.map((ref) => ({ image_url: String(ref) })).filter((item) => item.image_url);
+    if (!images.length) return [];
+    const body = {
+      model: api.model,
+      prompt,
+      n: 1,
+      size,
+      images
+    };
+    if (quality) body.quality = quality;
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: authHeaders(api, { "Content-Type": "application/json; charset=utf-8" }),
+      body: JSON.stringify(body)
+    });
+  } else {
+    const form = new FormData();
+    form.append("model", api.model);
+    form.append("prompt", prompt);
+    form.append("n", "1");
+    form.append("size", size);
+    if (quality) form.append("quality", quality);
+
+    let imageCount = 0;
+    refs.forEach((ref, index) => {
+      const file = dataUrlToFile(ref, index);
+      if (file) {
+        form.append(refs.length === 1 ? "image" : "image[]", new Blob([file.bytes], { type: file.mime }), file.name);
+        imageCount += 1;
+      } else if (/^https?:\/\//i.test(ref)) {
+        form.append("image_url", ref);
+        imageCount += 1;
+      }
+    });
+    if (!imageCount) return [];
+
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: authHeaders(api),
+      body: form
+    });
+  }
   const text = await response.text();
   let payload;
   try {
@@ -532,22 +614,24 @@ function sanitizeReferencePreviews(value, names, references) {
 
 function extractImages(result) {
   const images = [];
-  const visit = (value) => {
+  const visit = (value, key = "") => {
     if (!value) return;
     if (typeof value === "string") {
       if (/^(https?:\/\/|data:image\/)/i.test(value)) images.push(value);
+      else if (/^(b64_json|image_base64|base64|result)$/i.test(key) && /^[A-Za-z0-9+/=\r\n]+$/.test(value) && value.length > 1000) {
+        images.push(`data:image/png;base64,${value.replace(/\s+/g, "")}`);
+      }
       return;
     }
     if (Array.isArray(value)) {
-      value.forEach(visit);
+      value.forEach((item) => visit(item, key));
       return;
     }
     if (typeof value === "object") {
-      ["url", "image", "image_url", "output_url", "b64_json"].forEach((key) => {
-        if (key === "b64_json" && value[key]) images.push(`data:image/png;base64,${value[key]}`);
-        else visit(value[key]);
+      ["url", "image", "image_url", "output_url", "b64_json", "image_base64", "base64", "result"].forEach((itemKey) => {
+        if (value[itemKey]) visit(value[itemKey], itemKey);
       });
-      ["data", "images", "output", "outputs", "result"].forEach((key) => visit(value[key]));
+      ["data", "images", "output", "outputs", "content"].forEach((itemKey) => visit(value[itemKey], itemKey));
     }
   };
   visit(result);
@@ -604,18 +688,101 @@ async function persistGeneratedImages(images) {
   return saved;
 }
 
-async function callImageApi(api, prompt, references, count, quality) {
+async function callOpenAIResponsesImageTool(api, promptJob, refs, size, quality) {
+  const content = [{ type: "input_text", text: promptTextForImage(promptJob) }];
+  refs.forEach((ref) => content.push({ type: "input_image", image_url: String(ref), detail: "auto" }));
+  const ticketpro = isTicketproEndpoint(api.endpoint);
+  const requestBody = ticketpro
+    ? {
+      model: api.model,
+      input: refs.length ? [{ role: "user", content }] : promptTextForImage(promptJob),
+      store: true
+    }
+    : {
+      model: api.model,
+      input: [{ role: "user", content }],
+      tools: [{ type: "image_generation" }],
+      tool_choice: { type: "image_generation" },
+      store: false
+    };
+  if (!ticketpro) {
+    if (size) requestBody.tools[0].size = size;
+    if (quality) requestBody.tools[0].quality = quality;
+  }
+  const endpoint = responsesEndpointFor(api.endpoint);
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: authHeaders(api, { "Content-Type": "application/json; charset=utf-8" }),
+    body: JSON.stringify(requestBody)
+  });
+  const text = await response.text();
+  let payload;
+  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+  if (!response.ok) throw new Error(payload.error?.message || payload.message || text || `HTTP ${response.status}`);
+  const images = extractImages(payload);
+  if (!images.length) throw new Error("Responses image_generation 未返回可识别图片");
+  return images;
+}
+
+async function callArkSeedreamImage(api, promptJob, refs, size) {
+  const editMode = refs.length && (promptJob?.mode === "image_edit" || promptJob?.mode === "img2img" || normalizeRequestModes(api).includes("edit"));
+  const body = {
+    model: editMode ? (api.editModel || "doubao-seededit-3-0-i2i-250628") : (api.model || "seedream-3-0-t2i-250201"),
+    prompt: promptTextForImage(promptJob),
+    size: size || "1024x1024",
+    response_format: "b64_json"
+  };
+  if (editMode) body.image = rawBase64FromDataUrl(refs[0]);
+  const response = await fetch(api.endpoint || "https://ark.cn-beijing.volces.com/api/v3/images/generations", {
+    method: "POST",
+    headers: authHeaders(api, { "Content-Type": "application/json; charset=utf-8" }),
+    body: JSON.stringify(body)
+  });
+  const text = await response.text();
+  let payload;
+  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+  if (!response.ok) throw new Error(payload.error?.message || payload.message || text || `HTTP ${response.status}`);
+  const images = extractImages(payload);
+  if (!images.length) throw new Error("Ark API 返回成功，但未找到图片 URL 或 base64 图片字段");
+  return images;
+}
+
+function normalizePromptJobs(prompt, promptOutputs, count) {
+  const outputs = Array.isArray(promptOutputs) ? promptOutputs : [];
+  const jobs = outputs
+    .map((output) => normalizePromptOutput(output))
+    .filter((output) => output.prompt);
+  if (jobs.length) return jobs;
+  const total = Math.max(1, Math.min(9, Number(count) || 1));
+  const basePrompt = String(prompt || "").trim();
+  return Array.from({ length: total }, (_, index) => ({
+    mode: "text2img",
+    format: "plain",
+    filename_suffix: total > 1 ? `_${index + 1}` : "",
+    prompt: total > 1 ? `${basePrompt}\n生成第 ${index + 1} 张图：保持同一主题和比例，构图、细节和镜头语言做自然变化。` : basePrompt,
+    negative_prompt: ""
+  }));
+}
+
+async function callImageApi(api, prompt, references, count, quality, promptOutputs = []) {
   const outputs = [];
   const refs = valueList(references);
-  const total = Math.max(1, Math.min(9, Number(count) || 1));
-  const gptImage = isGptImageModel(api.model);
+  const promptJobs = normalizePromptJobs(prompt, promptOutputs, count);
+  const gptImage = isGptImageModel(api.model) || normalizeApiProvider(api.provider) === "openai";
   const requestSize = api.size || "1024x1024";
   const qualityValue = gptImage ? sanitizeQuality(quality) : "";
+  const provider = normalizeApiProvider(api.provider);
 
-  for (let i = 1; i <= total; i += 1) {
-    const promptToSend = total > 1
-      ? `${prompt}\n生成第 ${i} 张图：保持同一主题和比例，构图、细节和镜头语言做自然变化。`
-      : prompt;
+  for (const promptJob of promptJobs) {
+    const promptToSend = promptTextForImage(promptJob);
+    if (provider === "ark") {
+      outputs.push(...await callArkSeedreamImage(api, promptJob, refs, requestSize));
+      continue;
+    }
+    if (gptImage && api.useResponsesImageTool) {
+      outputs.push(...await callOpenAIResponsesImageTool(api, promptJob, refs, requestSize, qualityValue));
+      continue;
+    }
     if (gptImage && refs.length) {
       outputs.push(...await callGptImageEdit(api, promptToSend, refs, requestSize, qualityValue));
       continue;
@@ -632,8 +799,6 @@ async function callImageApi(api, prompt, references, count, quality) {
       body.stream = false;
       body.watermark = true;
       body.sequential_image_generation = "disabled";
-    }
-    if (!gptImage) {
       if (refs.length === 1) body.image = refs[0];
       if (refs.length > 1) body.image = refs;
     }
@@ -671,14 +836,62 @@ function chatEndpointFor(endpoint) {
   return `${text.replace(/\/$/, "")}/chat/completions`;
 }
 
+const IMAGE_PROMPT_ORCHESTRATOR_RULES = `
+# image-prompt-orchestrator 核心规则
+
+你是图像任务 Prompt 编排器。你不会生成图片，只负责判断任务类型并输出最终发给生图模型的提示词。
+
+## 必须先判断
+1. 用户是否提供参考图。
+2. 用户是要“改原图”，还是“参考风格/质感/构图生成新图”。
+3. 如果意图不明确，必须先反问，不要输出可生图的 outputs。
+
+## 任务类型
+- image_edit：用户要求保留原图主体/比例/构图/颜色/光影/材质，只修改、去掉、增加、替换或调整某处。
+- img2img：用户提供参考图，但要参考风格、质感、构图、氛围，重新生成新设计。
+- text2img：用户没有参考图，只按文字生成。
+
+## 输出策略
+- 改图 image_edit：只输出 1 个 output，format 必须是 json，prompt 是 JSON 字符串。
+- 参考图 + 生图 img2img：必须输出 2 个 outputs：
+  1. JSON 结构化版本：format=json，filename_suffix=_json。
+  2. 自然语言版本：format=plain，filename_suffix=_plain。
+- 纯文生图 text2img：默认只输出 1 个 plain output；只有用户明确要求比较 JSON / 非 JSON 时才输出两版。
+- 不要把 JSON 和自然语言混在同一个 output 中。
+
+## 改图 JSON 要点
+JSON prompt 必须表达：保留什么、改什么、修改区域、修补/自然衔接、风格要求、负向约束。优先包含字段：task、goal、keep_unchanged、edit_area、repair_instruction、style_requirement、negative_prompt。
+
+## 参考图生图 JSON 要点
+JSON prompt 优先包含字段：task、reference_usage、generate_target、design_requirements、color_palette、composition、quality_requirements、negative_prompt。必须明确参考什么、不照抄什么、生成什么主体、关键设计点、构图和负向约束。
+
+## 自然语言版要点
+自然语言 prompt 按顺序描述：参考图使用方式、主体与主题、大形和构图、关键设计点、材质特效配色、负向约束。
+
+## 严格返回 JSON
+只返回 JSON，不要 markdown，不要解释。格式必须是：
+{
+  "summary": "一句话中文总结",
+  "needs_clarification": false,
+  "clarification_question": "",
+  "outputs": [
+    {
+      "mode": "text2img | img2img | image_edit",
+      "format": "json | plain",
+      "filename_suffix": "_json | _plain |",
+      "target_width": 0,
+      "target_height": 0,
+      "aspect_ratio": "16:9",
+      "prompt": "最终发给生图模型的提示词；format=json 时这里必须是 JSON 字符串",
+      "negative_prompt": ""
+    }
+  ]
+}
+needs_clarification=true 时 outputs 必须是 []。
+`;
+
 function promptSystemText(mode) {
-  if (mode === "edit") {
-    return `你是图像任务 Prompt 编排器。你不会生成图片，只输出结构化 prompt 文本。当前模式是 edit。必须只输出 1 张卡片，内容为自然语言 Prompt，用于直接改图。输出必须是严格 JSON：{"cards":[{"title":"","subtitle":"","content":""}]}。不要输出 markdown 代码块，不要输出额外解释。卡片 content 只能是自然语言 Prompt，不要输出 JSON，不要输出字段名。Prompt 要清楚表达基于上传原图进行局部修改、保留什么、修改什么、未提及区域不变、光影材质边缘自然融合、负向约束。`;
-  }
-  if (mode === "reference") {
-    return `你是图像任务 Prompt 编排器。你不会生成图片，只输出结构化 prompt 文本。当前模式是 reference。必须只输出 1 张卡片，内容为自然语言 Prompt，用于参考图生图。输出必须是严格 JSON：{"cards":[{"title":"","subtitle":"","content":""}]}。不要输出 markdown 代码块，不要输出额外解释。卡片 content 只能是自然语言 Prompt，不要输出 JSON，不要输出字段名。Prompt 要清楚表达参考图如何使用、主体、风格、构图、材质、特效和负向约束。`;
-  }
-  return `你是图像任务 Prompt 编排器。你不会生成图片，只输出结构化 prompt 文本。当前模式是 text。必须只输出 1 张卡片，内容为自然语言 Prompt，用于纯文生图。输出必须是严格 JSON：{"cards":[{"title":"","subtitle":"","content":""}]}。不要输出 markdown 代码块，不要输出额外解释。卡片 content 只能是自然语言 Prompt，不要输出 JSON，不要输出字段名。`;
+  return `${IMAGE_PROMPT_ORCHESTRATOR_RULES}\n\n当前 UI 模式是 ${mode || "text"}，它是强提示但不是绝对命令；如果用户描述与 UI 模式冲突，以用户真实意图和是否提供参考图为准。`;
 }
 
 function assistantContentText(payload) {
@@ -699,20 +912,81 @@ function assistantContentText(payload) {
   return "";
 }
 
-function parsePromptCards(text) {
+function extractJsonObjectText(text) {
   let raw = String(text || "").trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "");
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
-  if (start >= 0 && end > start) raw = raw.slice(start, end + 1);
+  return start >= 0 && end > start ? raw.slice(start, end + 1) : raw;
+}
+
+function normalizePromptOutput(output, index = 0) {
+  const format = String(output?.format || "plain").trim().toLowerCase() === "json" ? "json" : "plain";
+  const mode = ["text2img", "img2img", "image_edit"].includes(String(output?.mode || "").trim())
+    ? String(output.mode).trim()
+    : "text2img";
+  const prompt = String(output?.prompt || output?.content || "").trim();
+  return {
+    mode,
+    format,
+    filename_suffix: String(output?.filename_suffix || (format === "json" ? "_json" : format === "plain" && index > 0 ? "_plain" : "")).trim(),
+    target_width: Number(output?.target_width) || 0,
+    target_height: Number(output?.target_height) || 0,
+    aspect_ratio: String(output?.aspect_ratio || "").trim(),
+    prompt,
+    negative_prompt: String(output?.negative_prompt || "").trim()
+  };
+}
+
+function cardsFromPromptOutputs(outputs) {
+  return outputs.map((output, index) => ({
+    title: output.format === "json" ? (output.mode === "image_edit" ? "改图 JSON Prompt" : "JSON 版 Prompt") : "自然语言版 Prompt",
+    subtitle: [output.mode, output.filename_suffix, output.aspect_ratio].filter(Boolean).join(" · ") || `输出 ${index + 1}`,
+    content: output.prompt
+  }));
+}
+
+function parsePromptAnalysis(text) {
   let payload;
   try {
-    payload = JSON.parse(raw);
+    payload = JSON.parse(extractJsonObjectText(text));
   } catch {
-    return [{ title: "模型返回 Prompt", subtitle: "模型未返回标准 JSON，已保留原始文本", content: String(text || "").trim() }];
+    const content = String(text || "").trim();
+    const outputs = content ? [normalizePromptOutput({ mode: "text2img", format: "plain", prompt: content })] : [];
+    return {
+      summary: "模型返回 Prompt",
+      needs_clarification: false,
+      clarification_question: "",
+      outputs,
+      cards: outputs.length ? [{ title: "模型返回 Prompt", subtitle: "模型未返回标准 JSON，已保留原始文本", content }] : []
+    };
   }
-  return (payload.cards || [])
-    .filter((card) => card.title && card.content)
-    .map((card) => ({ title: String(card.title), subtitle: String(card.subtitle || ""), content: String(card.content) }));
+
+  const needsClarification = Boolean(payload.needs_clarification);
+  const rawOutputs = Array.isArray(payload.outputs)
+    ? payload.outputs
+    : Array.isArray(payload.cards)
+      ? payload.cards.map((card) => ({ mode: "text2img", format: "plain", prompt: card.content || "" }))
+      : [];
+  const outputs = needsClarification ? [] : rawOutputs.map(normalizePromptOutput).filter((output) => output.prompt);
+  const cards = Array.isArray(payload.cards) && payload.cards.some((card) => card.content)
+    ? payload.cards.filter((card) => card.content).map((card, index) => ({
+      title: String(card.title || `Prompt ${index + 1}`),
+      subtitle: String(card.subtitle || ""),
+      content: String(card.content || "")
+    }))
+    : cardsFromPromptOutputs(outputs);
+
+  return {
+    summary: String(payload.summary || "").trim(),
+    needs_clarification: needsClarification,
+    clarification_question: String(payload.clarification_question || "").trim(),
+    outputs,
+    cards
+  };
+}
+
+function parsePromptCards(text) {
+  return parsePromptAnalysis(text).cards;
 }
 
 async function callPromptLlm(api, body) {
@@ -746,7 +1020,8 @@ async function callPromptLlm(api, body) {
     });
     requestBody = {
       model: api.model,
-      input: [{ role: "user", content: responseContent }]
+      input: [{ role: "user", content: responseContent }],
+      text: { format: { type: "json_object" } }
     };
   } else {
     requestBody = {
@@ -768,9 +1043,11 @@ async function callPromptLlm(api, body) {
   let payload;
   try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
   if (!response.ok) throw new Error(payload.error?.message || payload.message || text || `HTTP ${response.status}`);
-  const cards = parsePromptCards(assistantContentText(payload));
-  if (!cards.length) throw new Error("LLM 已返回结果，但未能解析出有效 Prompt 卡片");
-  return cards;
+  const analysis = parsePromptAnalysis(assistantContentText(payload));
+  if (!analysis.needs_clarification && !analysis.outputs.length && !analysis.cards.length) {
+    throw new Error("LLM 已返回结果，但未能解析出有效 Prompt 输出");
+  }
+  return analysis;
 }
 
 function readRecords() {
@@ -1073,6 +1350,7 @@ async function route(req, res) {
       const aspect = String(body.aspect || "").trim();
       const quality = sanitizeQuality(body.quality);
       const count = Math.max(1, Math.min(9, Number(body.count) || 1));
+      const promptOutputs = Array.isArray(body.promptOutputs) ? body.promptOutputs.map(normalizePromptOutput).filter((output) => output.prompt) : [];
       if (!visitor) return sendJson(res, 400, { error: "请先填写访问者身份" });
       if (!prompt) return sendJson(res, 400, { error: "Prompt 不能为空" });
 
@@ -1082,7 +1360,7 @@ async function route(req, res) {
 
       const startedAt = new Date().toISOString();
       try {
-        const rawImages = await callImageApi(api, prompt, references, count, quality);
+        const rawImages = await callImageApi(api, prompt, references, count, quality, promptOutputs);
         const images = await persistGeneratedImages(rawImages);
         await appendLog({
           time: startedAt,
@@ -1096,6 +1374,7 @@ async function route(req, res) {
           quality,
           referenceName: referenceName || "无",
           referencePreviews: refPreviews,
+          promptVariants: promptOutputs,
           count: images.length,
           outputs: images,
           status: "success"
@@ -1114,6 +1393,7 @@ async function route(req, res) {
           quality,
           referenceName: referenceName || "无",
           referencePreviews: refPreviews,
+          promptVariants: promptOutputs,
           count,
           outputs: [],
           status: "failed",
@@ -1146,7 +1426,9 @@ async function route(req, res) {
       if (!api) return sendJson(res, 400, { error: "所选 LLM 模型不存在或已停用" });
       const startedAt = new Date().toISOString();
       try {
-        const cards = await callPromptLlm(api, { mode, description, preserve, negative, styleTone, aspectRatio, imageDataUrls, imageDataUrl });
+        const analysis = await callPromptLlm(api, { mode, description, preserve, negative, styleTone, aspectRatio, imageDataUrls, imageDataUrl });
+        const cards = analysis.cards || [];
+        const outputs = analysis.outputs || [];
         await appendPromptRecord({
           time: startedAt,
           visitor,
@@ -1161,10 +1443,20 @@ async function route(req, res) {
           negative,
           inputImagePreview: imageDataUrl.length <= 200000 ? imageDataUrl : "",
           inputImagePreviews: imageDataUrls.filter((item) => String(item).length <= 200000),
+          summary: analysis.summary || "",
+          needs_clarification: Boolean(analysis.needs_clarification),
+          clarification_question: analysis.clarification_question || "",
+          outputs,
           cards,
           status: "success"
         });
-        return sendJson(res, 200, { cards });
+        return sendJson(res, 200, {
+          summary: analysis.summary || "",
+          needs_clarification: Boolean(analysis.needs_clarification),
+          clarification_question: analysis.clarification_question || "",
+          outputs,
+          cards
+        });
       } catch (error) {
         await appendPromptRecord({
           time: startedAt,

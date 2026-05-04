@@ -17,6 +17,9 @@ const state = {
   lastGeneratedPrompt: "",
   lastGeneratedJson: "",
   lastGeneratedMode: "",
+  promptAnalysis: null,
+  promptOutputs: [],
+  selectedPromptOutputIndex: 0,
   outputView: "plain",
   adminUsers: [],
   feishuAuth: null,
@@ -464,17 +467,34 @@ function getPromptText(cards) {
     .trim();
 }
 
+function outputByFormat(format) {
+  return (state.promptOutputs || []).find((output) => output.format === format && output.prompt);
+}
+
+function normalizePromptOutput(output) {
+  return {
+    mode: String(output?.mode || "text2img"),
+    format: String(output?.format || "plain") === "json" ? "json" : "plain",
+    filename_suffix: String(output?.filename_suffix || ""),
+    target_width: Number(output?.target_width) || 0,
+    target_height: Number(output?.target_height) || 0,
+    aspect_ratio: String(output?.aspect_ratio || ""),
+    prompt: String(output?.prompt || ""),
+    negative_prompt: String(output?.negative_prompt || "")
+  };
+}
+
 function plainOutputAvailable() {
-  return state.lastGeneratedMode !== "edit" && Boolean(state.lastGeneratedPrompt);
+  return Boolean(outputByFormat("plain") || (!state.promptOutputs.length && state.lastGeneratedMode !== "edit" && state.lastGeneratedPrompt));
 }
 
 function jsonOutputAvailable() {
-  return state.lastGeneratedMode !== "text" && Boolean(state.lastGeneratedJson);
+  return Boolean(outputByFormat("json") || (!state.promptOutputs.length && state.lastGeneratedMode !== "text" && state.lastGeneratedJson));
 }
 
 function currentOutputText() {
-  if (state.outputView === "json") return state.lastGeneratedJson || "";
-  return state.lastGeneratedPrompt || "";
+  if (state.outputView === "json") return outputByFormat("json")?.prompt || state.lastGeneratedJson || "";
+  return outputByFormat("plain")?.prompt || state.lastGeneratedPrompt || "";
 }
 
 function updatePromptFormatVisibility() {
@@ -542,23 +562,34 @@ async function optimizePrompt() {
       method: "POST",
       body: JSON.stringify(input)
     });
+    if (data.needs_clarification) {
+      state.promptAnalysis = data;
+      state.promptOutputs = [];
+      state.lastGeneratedPrompt = "";
+      state.lastGeneratedJson = "";
+      updatePromptFormatVisibility();
+      setStatus("optimizeStatus", data.clarification_question || "需求还不明确，请补充说明。", true);
+      return;
+    }
     const cards = data.cards || [];
+    state.promptAnalysis = data;
+    state.promptOutputs = (data.outputs || []).map(normalizePromptOutput).filter((output) => output.prompt);
     state.lastGeneratedMode = state.taskMode;
-    state.lastGeneratedPrompt = getPromptText(cards);
-    state.lastGeneratedJson = state.taskMode === "text"
+    state.lastGeneratedPrompt = outputByFormat("plain")?.prompt || getPromptText(cards);
+    state.lastGeneratedJson = outputByFormat("json")?.prompt || (state.taskMode === "text"
       ? ""
       : (state.lastGeneratedPrompt
         ? JSON.stringify(buildPromptJson(input, state.lastGeneratedPrompt), null, 2)
-        : "");
-    state.outputView = state.taskMode === "edit" ? "json" : "plain";
+        : ""));
+    state.outputView = outputByFormat("json") && state.taskMode === "edit" ? "json" : "plain";
     if (state.outputView === "json" && !jsonOutputAvailable()) state.outputView = "plain";
     if (state.outputView === "plain" && !plainOutputAvailable()) state.outputView = "json";
     $("promptInput").value = currentOutputText();
     updatePromptFormatVisibility();
-    if (!state.lastGeneratedPrompt) {
+    if (!currentOutputText()) {
       setStatus("optimizeStatus", "模型未返回有效 Prompt。", true);
     } else {
-      setStatus("optimizeStatus", "Prompt 已生成，可直接编辑或继续生图。");
+      setStatus("optimizeStatus", state.promptOutputs.length > 1 ? "Prompt 已生成多个版本，可切换 JSON / 自然语言后继续生图。" : "Prompt 已生成，可直接编辑或继续生图。");
     }
   } catch (error) {
     setStatus("optimizeStatus", error.message, true);
@@ -574,6 +605,9 @@ function clearOptimizerInputs() {
   state.lastGeneratedPrompt = "";
   state.lastGeneratedJson = "";
   state.lastGeneratedMode = "";
+  state.promptAnalysis = null;
+  state.promptOutputs = [];
+  state.selectedPromptOutputIndex = 0;
   state.outputView = "plain";
   state.references = [];
   state.canClearReferences = false;
@@ -612,6 +646,16 @@ async function generateImage() {
   const promptToSend = rawPrompt.includes("画面比例要求")
     ? rawPrompt
     : `${rawPrompt}\n\n画面比例要求：${aspect}。`;
+  const generatedOutputPrompts = state.promptOutputs.map((output) => String(output.prompt || "").trim()).filter(Boolean);
+  const canSendPromptOutputs = state.promptOutputs.length > 1 && generatedOutputPrompts.includes(rawPrompt);
+  const promptOutputsToSend = canSendPromptOutputs
+    ? state.promptOutputs.map((output) => ({
+      ...output,
+      prompt: String(output.prompt || "").includes("画面比例要求")
+        ? String(output.prompt || "")
+        : `${String(output.prompt || "")}\n\n画面比例要求：${aspect}。`
+    }))
+    : [];
 
   $("generateBtn").disabled = true;
   $("imageBox").innerHTML = '<div class="placeholder">正在生成图片，请稍候...</div>';
@@ -626,6 +670,7 @@ async function generateImage() {
         clientId: state.clientId,
         prompt: promptToSend,
         originalPrompt: rawPrompt,
+        promptOutputs: promptOutputsToSend,
         aspect,
         count,
         quality,
@@ -1072,7 +1117,9 @@ function renderApis(apis) {
     const item = document.createElement("div");
     item.className = "api-item";
     const info = document.createElement("div");
-    info.innerHTML = `<strong>${escapeHtml(api.name)}</strong><span>${escapeHtml(api.model)} · ${escapeHtml(formatApiModes(api))}</span>`;
+    var adapter = api.provider && api.provider !== "auto" ? ` · ${api.provider}` : "";
+    var responses = api.useResponsesImageTool ? " · Responses 工具" : "";
+    info.innerHTML = `<strong>${escapeHtml(api.name)}</strong><span>${escapeHtml(api.model)} · ${escapeHtml(formatApiModes(api))}${escapeHtml(adapter)}${escapeHtml(responses)}</span>`;
 
     const edit = document.createElement("button");
     edit.type = "button";
@@ -1109,6 +1156,9 @@ function clearApiForm() {
   $("apiEndpoint").value = "";
   $("apiKey").value = "";
   $("apiSize").value = "1024x1024";
+  $("apiProvider").value = "auto";
+  $("apiEditModel").value = "";
+  $("apiUseResponsesImageTool").checked = false;
   $("apiModeGeneration").checked = true;
   $("apiModeEdit").checked = false;
   setStatus("apiStatus", "");
@@ -1124,6 +1174,9 @@ function fillApiForm(api) {
   $("apiEndpoint").value = api.endpoint || "";
   $("apiKey").value = api.apiKey || "";
   $("apiSize").value = api.size || "1024x1024";
+  $("apiProvider").value = api.provider || "auto";
+  $("apiEditModel").value = api.editModel || "";
+  $("apiUseResponsesImageTool").checked = Boolean(api.useResponsesImageTool);
   const modes = getApiModes(api);
   $("apiModeGeneration").checked = modes.includes("generation");
   $("apiModeEdit").checked = modes.includes("edit");
@@ -1141,6 +1194,9 @@ async function saveApi(event) {
     endpoint: $("apiEndpoint").value,
     apiKey: $("apiKey").value,
     size: $("apiSize").value || "1024x1024",
+    provider: $("apiProvider").value || "auto",
+    editModel: $("apiEditModel").value,
+    useResponsesImageTool: $("apiUseResponsesImageTool").checked,
     requestModes,
     enabled: requestModes.length > 0
   };

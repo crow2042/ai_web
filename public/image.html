@@ -273,6 +273,16 @@
             <label>API 地址<input id="apiEndpoint" placeholder="图片生成接口地址" /></label>
             <label>API Key<input id="apiKey" type="password" placeholder="保存后会隐藏" /></label>
             <label>尺寸<input id="apiSize" placeholder="1024x1024" /></label>
+            <label>适配器
+              <select id="apiProvider">
+                <option value="auto">自动</option>
+                <option value="generic">通用 JSON</option>
+                <option value="openai">OpenAI / GPT Image</option>
+                <option value="ark">Ark Seedream</option>
+              </select>
+            </label>
+            <label>Ark 改图模型<input id="apiEditModel" placeholder="doubao-seededit-3-0-i2i-250628" /></label>
+            <label class="check-row"><input id="apiUseResponsesImageTool" type="checkbox" /> GPT Image 使用 Responses image_generation 工具</label>
             <label class="mode-multi-field">用于模式
               <div class="mode-multi-box">
                 <label class="mode-check"><input id="apiModeGeneration" type="checkbox" checked /> generation 生图</label>
