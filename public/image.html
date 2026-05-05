@@ -122,11 +122,8 @@
         <div class="prompt-field">
           <div class="prompt-head">
             <span>Prompt</span>
-            <div class="segmented-switch slider-switch compact-switch" id="promptFormatSwitch" hidden>
-              <span class="switch-track" aria-hidden="true"></span>
-              <span class="switch-thumb" aria-hidden="true"></span>
-              <span class="switch-shadow" aria-hidden="true"></span>
-              <button id="plainPromptBtn" class="switch-btn is-active" type="button" data-format="plain">Prompt</button>
+            <div class="segmented-switch task-mode-switch" id="promptFormatSwitch" hidden>
+              <button id="plainPromptBtn" class="switch-btn is-active" type="button" data-format="plain">自然语言</button>
               <button id="jsonPromptBtn" class="switch-btn" type="button" data-format="json">JSON</button>
             </div>
           </div>
@@ -353,6 +350,7 @@
       <button class="primary" id="closeLoginFailBtn">确定</button>
     </dialog>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="/app.js?v=merge-1"></script>
   </body>
 </html>

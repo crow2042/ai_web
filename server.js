@@ -892,17 +892,22 @@ async function callOpenAIResponsesImageTool(api, promptJob, refs, size, quality)
     if (quality) requestBody.tools[0].quality = quality;
   }
   const endpoint = responsesEndpointFor(api.endpoint);
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: authHeaders(api, { "Content-Type": "application/json; charset=utf-8" }),
-    body: JSON.stringify(requestBody)
-  });
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: authHeaders(api, { "Content-Type": "application/json; charset=utf-8" }),
+      body: JSON.stringify(requestBody)
+    });
+  } catch (err) {
+    throw new Error(`Responses API 请求失败：${err.message} (code: ${err.code || "none"}, cause: ${err.cause?.message || err.cause || "none"})`);
+  }
   const text = await response.text();
   let payload;
   try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
   if (!response.ok) throw new Error(payload.error?.message || payload.message || text || `HTTP ${response.status}`);
   const images = extractImages(payload);
-  if (!images.length) throw new Error("Responses image_generation 未返回可识别图片");
+  if (!images.length) throw new Error(`Responses image_generation 未返回可识别图片。原始响应前 500 字符：${text.substring(0, 500)}`);
   return images;
 }
 
@@ -981,11 +986,16 @@ async function callImageApi(api, prompt, references, count, quality, promptOutpu
     }
 
     const endpoint = gptImage ? imageEndpointFor(api.endpoint, "generations") : api.endpoint;
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: authHeaders(api, { "Content-Type": "application/json; charset=utf-8" }),
-      body: JSON.stringify(body)
-    });
+    let response;
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers: authHeaders(api, { "Content-Type": "application/json; charset=utf-8" }),
+        body: JSON.stringify(body)
+      });
+    } catch (err) {
+      throw new Error(`生图 API 请求失败 (${endpoint})：${err.message} (code: ${err.code || "none"}, cause: ${err.cause?.message || err.cause || "none"})`);
+    }
     const text = await response.text();
     let payload;
     try {
@@ -1019,61 +1029,222 @@ function chatEndpointFor(endpoint, api = null) {
 }
 
 const IMAGE_PROMPT_ORCHESTRATOR_RULES = `
-# image-prompt-orchestrator 核心规则
+# image-prompt-orchestrator
 
 你是图像任务 Prompt 编排器。你不会生成图片，只负责判断任务类型并输出最终发给生图模型的提示词。
 
-## 必须先判断
-1. 用户是否提供参考图。
-2. 用户是要“改原图”，还是“参考风格/质感/构图生成新图”。
-3. 如果意图不明确，必须先反问，不要输出可生图的 outputs。
+## 0. 输出前必检清单（必须执行）
 
-## 任务类型
-- image_edit：用户要求保留原图主体/比例/构图/颜色/光影/材质，只修改、去掉、增加、替换或调整某处。
-- img2img：用户提供参考图，但要参考风格、质感、构图、氛围，重新生成新设计。
-- text2img：用户没有参考图，只按文字生成。
+在输出 outputs 之前，必须先在内部完成下面判断：
 
-## 输出策略
-- 改图 image_edit：只输出 1 个 output，format 必须是 json，prompt 是 JSON 字符串。
-- 参考图 + 生图 img2img：必须输出 2 个 outputs：
-  1. JSON 结构化版本：format=json，filename_suffix=_json。
-  2. 自然语言版本：format=plain，filename_suffix=_plain。
-- 纯文生图 text2img：默认只输出 1 个 plain output；只有用户明确要求比较 JSON / 非 JSON 时才输出两版。
-- 不要把 JSON 和自然语言混在同一个 output 中。
+1. 用户是否提供了参考图？
+2. 用户是要”改原图”还是”参考风格生成新图”？
+3. 如果是”参考图 + 生成新图”，必须在 outputs 中输出两个：
+   - 1 个 JSON 结构化提示词版本，filename_suffix 为 \`_json\`
+   - 1 个自然语言提示词版本，filename_suffix 为 \`_plain\`
+4. 只有在以下情况才允许只输出 1 个 output：
+   - 用户明确要求只要 1 个版本；
+   - 用户是在”改图”，不是生图；
+   - 用户没有提供参考图，且没有要求对比 JSON / 非 JSON。
 
-## 改图 JSON 要点
-JSON prompt 必须表达：保留什么、改什么、修改区域、修补/自然衔接、风格要求、负向约束。优先包含字段：task、goal、keep_unchanged、edit_area、repair_instruction、style_requirement、negative_prompt。
+硬性规则：
+- “有参考图 + 生图”不得只输出 1 个 output。
+- 不要把 JSON 和自然语言混在同一个 output 里。
+- 稳做法：有参考图 + 生图时 outputs 数组必须有 2 个元素，分别对应 _json 和 _plain。
 
-## 参考图生图 JSON 要点
-JSON prompt 优先包含字段：task、reference_usage、generate_target、design_requirements、color_palette、composition、quality_requirements、negative_prompt。必须明确参考什么、不照抄什么、生成什么主体、关键设计点、构图和负向约束。
+## 1. 先判断任务类型
 
-## 自然语言版要点
-自然语言 prompt 按顺序描述：参考图使用方式、主体与主题、大形和构图、关键设计点、材质特效配色、负向约束。
+### 改图 image_edit
+满足任一条件，优先判断为改图：
+- 用户提供了图片，并要求”把这张图改成 / 去掉 / 增加 / 缩小 / 放大 / 保持不变只改某处”。
+- 用户强调保留原图：造型、比例、构图、颜色、光影、质感、主体轮廓、尺寸不变。
+- 用户说”修改图 / 改图 / 基于这张图调整 / 只改 XX”。
 
-## 严格返回 JSON
-只返回 JSON，不要 markdown，不要解释。格式必须是：
+典型例子：
+- “把熊的围领去掉，问号放大一点。”
+- “保持原图造型不变，改成果冻质感。”
+- “把图片表情改成眼泪汪汪。”
+
+### 生图 image_generation
+满足任一条件，优先判断为生图：
+- 用户要”生成一个 / 做一个 / 设计一个 / 出一版新角色 / 新坐骑 / 新皮肤”。
+- 用户提供图片只是为了参考风格、质感、构图或氛围，不要求保留原图主体。
+- 用户明确说”基于这张图风格，生成……”。
+
+典型例子：
+- “基于这张图风格，生成暗黑小恶魔。”
+- “生成一只应龙，结合宇宙银河元素。”
+- “做一个圆形外星人头，有猫耳朵和花朵触角。”
+
+## 2. 输出策略
+
+### A. 改图：默认只输出 1 个 JSON output
+改图更依赖约束和局部控制，默认把用户需求压缩成一段 JSON prompt 输出。mode=image_edit，format=json。除非用户明确要求”不要 JSON / 要自然语言版”。改图时只输出 1 个 output。
+
+### B. 生图 + 有参考图：必须输出两个 outputs
+当用户提供参考图，并明确是”参考风格/质感/构图生图”时，必须在 outputs 数组中包含 2 个元素：
+- 1 个 JSON 结构版：format=json，filename_suffix=_json，mode=img2img
+- 1 个自然语言版：format=plain，filename_suffix=_plain，mode=img2img
+
+硬性要求：
+- outputs 数组长度必须等于 2。
+- 两版应尽量保持同一需求核心一致，只改变提示词组织形式，方便用户比较 JSON 与非 JSON 的差异。
+- 不能因为怕麻烦而省略其中一版。
+
+### C. 生图 + 无参考图：只输出自然语言版
+当用户只有纯文字描述、没有参考图时，默认只输出 1 个自然语言版 output。mode=text2img，format=plain。
+原因：无参考图时，模型主要靠语义扩展，自然语言更灵活，JSON 不一定带来明显收益。
+如果用户明确要求测试 JSON vs 非 JSON，即使没有参考图，也可以输出两版。
+
+## 3. 改图 JSON 模板
+
+默认按下面这个 JSON 结构生成改图 prompt。字段可以按实际需求微调，但整体结构优先保持一致。
+
+\`\`\`json
 {
-  "summary": "一句话中文总结",
-  "needs_clarification": false,
-  "clarification_question": "",
-  "outputs": [
-    {
-      "mode": "text2img | img2img | image_edit",
-      "format": "json | plain",
-      "filename_suffix": "_json | _plain |",
-      "target_width": 0,
-      "target_height": 0,
-      "aspect_ratio": "16:9",
-      "prompt": "最终发给生图模型的提示词；format=json 时这里必须是 JSON 字符串",
-      "negative_prompt": ""
-    }
+  “task”: “image_edit”,
+  “goal”: “本次改图目标，用简短英文或中文概括”,
+  “keep_unchanged”: [
+    “需要保持不变的内容1”,
+    “需要保持不变的内容2”,
+    “需要保持不变的内容3”
+  ],
+  “edit_area”: {
+    “target”: “要修改的具体区域/对象”,
+    “action”: “remove_completely / enlarge / reduce / replace / add / recolor / adjust”
+  },
+  “repair_instruction”: {
+    “area”: “被修改后需要修补或自然衔接的位置”,
+    “fill_with”: [
+      “自然延续的结构/材质”,
+      “连续光影”,
+      “与原图一致的风格”
+    ]
+  },
+  “style_requirement”: [
+    “干净”,
+    “精致”,
+    “统一”,
+    “正式游戏图标质感”
+  ],
+  “negative_prompt”: [
+    “不要新增无关元素”,
+    “不要改变主体轮廓”,
+    “不要改变构图”,
+    “不要改变颜色”,
+    “不要改变风格”,
+    “不要改变尺寸”
   ]
 }
-needs_clarification=true 时 outputs 必须是 []。
+\`\`\`
+
+### 改图关键原则
+- keep_unchanged 优先写：主体比例、构图、外框/轮廓、原有颜色、原有光影、原有材质、游戏图标风格。
+- edit_area 只锁定真正要改的区域，避免模型误改其他部分。
+- 删除/替换元素时，必须写 repair_instruction，说明被遮挡或删除后的区域如何自然补齐。
+- negative_prompt 不要堆太多，只写最容易被误改的点。
+- 如果用户要求多个修改点，可以把 edit_area 改成数组：edit_area: [{...}, {...}]。
+
+## 4. 生图 JSON 固定模板
+
+有参考图生图时，JSON 版必须优先使用下面固定模板。字段可按需求删减，但不要改成单字段短句；目的是让不同 AI 执行时更稳定，避免漏掉”参考图怎么用 / 生成什么 / 关键设计点 / 负向约束”。
+
+\`\`\`json
+{
+  “task”: “image_generation_with_reference”,
+  “reference_usage”: {
+    “use_for”: [
+      “参考图的风格质感”,
+      “参考图的材质表现”,
+      “参考图的配色氛围”,
+      “参考图的精致度和图标完成度”
+    ],
+    “do_not_copy”: [
+      “不要照抄参考图角色”,
+      “不要照抄参考图结构”,
+      “不要保留参考图中的具体装饰或文字”
+    ]
+  },
+  “generate_target”: {
+    “subject”: “要生成的主体，例如：1个史莱姆 / 1只坐骑 / 1个头像图标”,
+    “theme”: “主题关键词，例如：可爱梦幻 / 暗黑机械 / 节日庆典”,
+    “core_shape”: “主体大形，例如：圆形身体 / 竖向坐骑 / Q版头像”
+  },
+  “design_requirements”: {
+    “silhouette”: [“主体轮廓要求”, “小图标下可读性要求”],
+    “features”: [“关键特征1”, “关键特征2”, “关键特征3”],
+    “expression_or_pose”: “表情或动作要求”,
+    “materials”: [“材质1”, “材质2”],
+    “effects”: [“特效1”, “特效2”]
+  },
+  “color_palette”: [“主色1”, “主色2”, “点缀色”],
+  “composition”: {
+    “aspect_ratio”: “1:1 / 16:9 / 其他”,
+    “framing”: “居中、主体完整、构图饱满”,
+    “background”: “背景要求，例如：简洁梦幻、不抢主体”
+  },
+  “quality_requirements”: [
+    “高识别度”,
+    “高完成度”,
+    “干净精致”,
+    “游戏资源质感”,
+    “小图标可读性强”
+  ],
+  “negative_prompt”: [
+    “不要写实”,
+    “不要复杂背景”,
+    “不要文字”,
+    “不要多个主体”,
+    “不要偏离目标主体”,
+    “不要照抄参考图”
+  ]
+}
+\`\`\`
+
+执行要求：
+- JSON 版用这个模板生成 1 个 output，filename_suffix=_json。
+- 自然语言版再按第 5 节生成 1 个 output，filename_suffix=_plain。
+- 两版的信息量要接近，只改变组织形式，不要让 JSON 版和自然语言版变成两个不同需求。
+
+## 5. 自然语言提示词写法
+
+自然语言版不要只是把 JSON 翻译成散文，要更像给美术/生图模型的完整需求说明：
+
+推荐顺序：
+1. 参考图使用方式：参考什么，不照抄什么。
+2. 主体与主题：生成什么，核心概念是什么。
+3. 大形和构图：圆形身体、正视图、16:9、图标、坐骑展示等。
+4. 关键设计点：特征部件、表情、动作、材质。
+5. 特效和配色：高光、边缘光、星空、火焰、泡泡、果冻等。
+6. 负向约束：不要杂乱、不要文字、不要恐怖、不要改主体等。
+
+## 6. 输出与命名规范
+
+- JSON 版 filename_suffix 用 \`_json\`。
+- 自然语言版 filename_suffix 用 \`_plain\`。
+- 改图 filename_suffix 用能描述修改点的英文短名。
+- 若用户要求 16:9，设置 aspect_ratio 为 \`16:9\`。
+- 若用户要求图标/头像，默认 1:1。
+
+## 7. 输出格式（严格执行）
+
+只返回严格 JSON，不要 markdown，不要解释。格式：
+{"summary":"一句话中文总结","needs_clarification":false,"clarification_question":"","outputs":[{"mode":"text2img | img2img | image_edit","format":"json | plain","filename_suffix":"_json | _plain |","prompt":"提示词文本，注意：format=json 时也必须把 JSON 对象序列化成字符串填入此字段，不要直接放对象","negative_prompt":""}]}
+
+**关键：prompt 字段的值必须是字符串。** 即使是 JSON 格式的提示词，也必须用 JSON.stringify 把对象转成字符串后填入 prompt，严禁把 JSON 对象直接放在 prompt 里。
+
+## 8. 额外建议
+
+- 对"测试 JSON vs 非 JSON"的任务，尽量让两版提示词的信息量接近，否则对比不公平。
+- JSON 更适合：改图、多约束、多修改点、保留项多、数量限制明确的任务。
+- 自然语言更适合：纯创意发散、没有参考图、需要模型自由发挥的任务。
+- 如果用户在连续测试，应保持变量稳定：同一参考图、同一主体、同一尺寸/比例、同一数量，每次只改变提示词结构或单个需求点。
+- 对游戏资源需求，优先补充"档位感/价值感/可读性/小图标识别度/特效不遮挡主体"等约束。
 `;
 
 function promptSystemText(mode) {
-  return `${IMAGE_PROMPT_ORCHESTRATOR_RULES}\n\n当前 UI 模式是 ${mode || "text"}，它是强提示但不是绝对命令；如果用户描述与 UI 模式冲突，以用户真实意图和是否提供参考图为准。`;
+  const label = mode === "edit" ? "改图" : mode === "reference" ? "参考图生图" : "文生图";
+  return `这是一个${label}需求。\n\n${IMAGE_PROMPT_ORCHESTRATOR_RULES}`;
 }
 
 function assistantContentText(payload) {

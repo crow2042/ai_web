@@ -521,12 +521,32 @@ function normalizePromptOutput(output) {
   };
 }
 
+function extractPlainFromJsonOutput() {
+  const jsonOutput = outputByFormat("json");
+  if (!jsonOutput?.prompt) return "";
+  try {
+    const parsed = JSON.parse(jsonOutput.prompt);
+    if (typeof parsed.plain_prompt === "string" && parsed.plain_prompt.trim()) {
+      return parsed.plain_prompt.trim();
+    }
+    if (typeof parsed.task === "string") {
+      const parts = [];
+      if (parsed.goal) parts.push(parsed.goal);
+      if (parsed.generate_target?.subject) parts.push(`主体：${parsed.generate_target.subject}`);
+      if (parsed.generate_target?.theme) parts.push(`主题：${parsed.generate_target.theme}`);
+      if (parsed.description) parts.push(parsed.description);
+      if (parts.length) return parts.join("，");
+    }
+  } catch {}
+  return jsonOutput.prompt;
+}
+
 function plainOutputAvailable() {
-  return Boolean(outputByFormat("plain") || (!state.promptOutputs.length && state.lastGeneratedMode !== "edit" && state.lastGeneratedPrompt));
+  return Boolean(outputByFormat("plain") || (state.lastGeneratedMode !== "edit" && state.lastGeneratedPrompt));
 }
 
 function jsonOutputAvailable() {
-  return Boolean(outputByFormat("json") || (!state.promptOutputs.length && state.lastGeneratedMode !== "text" && state.lastGeneratedJson));
+  return Boolean(outputByFormat("json") || (state.lastGeneratedMode !== "text" && state.lastGeneratedJson));
 }
 
 function currentOutputText() {
@@ -542,7 +562,6 @@ function updatePromptFormatVisibility() {
   switcher.hidden = !showSwitcher;
   $("plainPromptBtn").classList.toggle("is-active", state.outputView === "plain");
   $("jsonPromptBtn").classList.toggle("is-active", state.outputView === "json");
-  switcher.classList.toggle("is-second-active", state.outputView === "json");
 }
 
 function setOutputView(view) {
@@ -612,7 +631,7 @@ async function optimizePrompt() {
     state.promptAnalysis = data;
     state.promptOutputs = (data.outputs || []).map(normalizePromptOutput).filter((output) => output.prompt);
     state.lastGeneratedMode = state.taskMode;
-    state.lastGeneratedPrompt = outputByFormat("plain")?.prompt || getPromptText(cards);
+    state.lastGeneratedPrompt = outputByFormat("plain")?.prompt || extractPlainFromJsonOutput() || getPromptText(cards);
     state.lastGeneratedJson = outputByFormat("json")?.prompt || (state.taskMode === "text"
       ? ""
       : (state.lastGeneratedPrompt
@@ -729,6 +748,10 @@ async function generateImage() {
       })
     });
     state.lastImages = data.images || (data.image ? [data.image] : []);
+    state.lastImageFormats = (data.images || []).map((_, i) => {
+      const variant = promptOutputsToSend[i] || state.promptOutputs[i];
+      return variant?.format === "json" ? "JSON" : "自然语言";
+    });
     renderOutput(state.lastImages);
     state.canClearReferences = true;
     updateClearReferencesButton();
@@ -752,18 +775,22 @@ function renderOutput(images) {
   const grid = document.createElement("div");
   grid.className = "output-grid";
   grid.style.setProperty("--tile-ratio", getCssAspectRatio(getSelectedAspect()));
+  const formats = state.lastImageFormats || [];
   images.forEach((src, index) => {
     const item = document.createElement("div");
     item.className = "output-item";
     const img = new Image();
     img.alt = `AI 生成图片 ${index + 1}`;
     img.src = src;
+    const label = document.createElement("span");
+    label.className = "format-label";
+    label.textContent = formats[index] || "";
     const button = document.createElement("button");
     button.className = "download-button mini-download";
     button.type = "button";
     button.textContent = "下载";
-    button.addEventListener("click", () => downloadImage(src, `ai-image-${index + 1}.png`));
-    item.append(img, button);
+    button.addEventListener("click", () => downloadImage(src, `ai-image-${index + 1}.png`).catch((err) => alert(`下载失败：${err.message}`)));
+    item.append(img, label, button);
     grid.append(item);
   });
   $("imageBox").replaceChildren(grid);
@@ -793,8 +820,35 @@ function getCssAspectRatio(aspect) {
 }
 
 async function downloadAllImages() {
-  for (const [index, src] of state.lastImages.entries()) {
-    await downloadImage(src, `ai-image-${index + 1}.png`);
+  const images = state.lastImages;
+  if (!images.length) return;
+  $("downloadAllBtn").disabled = true;
+  $("downloadAllBtn").textContent = "打包中...";
+  try {
+    const zip = new JSZip();
+    const fetches = images.map(async (src, index) => {
+      const name = `ai-image-${index + 1}.png`;
+      if (src.startsWith("data:")) {
+        const response = await fetch(src);
+        return { name, blob: await response.blob() };
+      }
+      const response = await fetch(getDownloadHref(src, name));
+      if (!response.ok) throw new Error(`下载第 ${index + 1} 张失败：HTTP ${response.status}`);
+      return { name, blob: await response.blob() };
+    });
+    const results = await Promise.all(fetches);
+    for (const { name, blob } of results) {
+      zip.file(name, blob);
+    }
+    const zipBlob = await zip.generateAsync({ type: "blob" });
+    const objectUrl = URL.createObjectURL(zipBlob);
+    triggerBlobDownload(objectUrl, "ai-images.zip");
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+  } catch (error) {
+    alert(`打包下载失败：${error.message}`);
+  } finally {
+    $("downloadAllBtn").disabled = false;
+    $("downloadAllBtn").textContent = "全部下载";
   }
 }
 
@@ -826,7 +880,7 @@ function triggerBlobDownload(href, name) {
   link.style.display = "none";
   document.body.append(link);
   link.click();
-  link.remove();
+  setTimeout(() => link.remove(), 100);
 }
 
 function syncTopbarLoginState() {
@@ -1503,7 +1557,7 @@ function showPreview(images) {
     button.className = "download-button";
     button.type = "button";
     button.textContent = "下载";
-    button.addEventListener("click", () => downloadImage(src, `record-image-${index + 1}.png`));
+    button.addEventListener("click", () => downloadImage(src, `record-image-${index + 1}.png`).catch((err) => alert(`下载失败：${err.message}`)));
     item.append(img, button);
     grid.append(item);
   });
